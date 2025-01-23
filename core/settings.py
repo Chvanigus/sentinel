@@ -45,17 +45,14 @@ USER_NAME = 'millergeo'
 PASSWORD = 'Wialongeo'
 API_URL = 'https://scihub.copernicus.eu/dhus'
 
-# Идентификатор системы пространственной привязки (SRID) для перепроецирования изображений
 DESTSRID_OBTAIN = 4326
 DESTSRID = 3857
 
 # Интервал допустимых годов
 YEAR_INTERVAL = [1900, datetime.datetime.now().year + 5]
 
-# Максимальный процент облачности для сцены. Значение по умолчанию
 CLOUD_MAX = 100
 
-# Номера квадратов в соответствии с соглашением об именах военно-сетевой справочной системы США (MGRS)
 TILES = ['38ULA', '38ULB']
 
 if platform.system() == 'Linux':
@@ -66,45 +63,32 @@ else:
 # Текущий год
 YEAR = str(datetime.datetime.now().year)
 
-# Путь к цветной схеме NDVI
 COLORMAP = join(BASE_DIR, 'works_files', 'styles_qgis', 'ndvi_style.qml')
 
-# Нет значения данных
 NODATA = -9999
 
-# Настройки для подключения к базе данных
 db_config = {'host': '192.168.0.9',
-             'user': 'geoadmin',
-             'password': 'canopus',
+             'user': 'postgres',
+             'password': 'Maryland2017',
              'database': 'gpgeo'}
 
-# GeoServer image directory.
-IMAGE_DIR = '/opt/geoware/SENTINEL' + str(datetime.datetime.now().year) + '/'
+IMAGE_DIR = '/mnt/geoware/SENTINEL' + str(datetime.datetime.now().year) + '/'
 
-# For a remote tile server (GeoServer) set host, username and ssh port.
-# Remote host address. Set to localhost if the tile server is installed on local system.
 RMHOST = '192.168.0.9'
 RMUSER = 'sysop'
-# Password for remote host connection.
-# It is highly recommended use public key instead of password authentication.
 RMPASSWORD = 'm7f6k4W@a1'
-# Remote host ssh port, default is 22.
 SSH_PORT = 8822
 
-# GeoServer settings.
 TSUSER = 'admin'
 TSPASSWORD = 'm7f6k4W@a1'
-# GeoServer port, default is 8080.
 TSPORT = 11990
 WORKSPACE = 'sentinel'
 TILE_SIZE = 128
 
-# GeoWebCache settings.
-# Configure GeoServer Geo Web Cache (GWC).
 USE_GWC = True
-# Cache zoom levels.
 ZOOM_START = 7
 ZOOM_STOP = 16
 
-# Когда включен режим разработчика - не будет происходить удаление отработанных файлов, здесь аккуратно
 DEBUG = False
+
+ALLOWED_CLOUDS = 0  # Процент видимости полей

@@ -7,6 +7,7 @@ import logging
 import sys
 from collections import OrderedDict
 from datetime import datetime, timedelta
+from tqdm import tqdm
 
 from sentinelsat import SentinelAPI
 
@@ -75,9 +76,9 @@ class GetData:
         return scenes
 
     def download(self, scenes: list) -> None:
-        """ Метод скачивания снимков, которые содержатся в переданном списке словарей
-        :param scenes:
-            Список словарей с данными о каждом снимке
+        """Метод скачивания снимков, которые содержатся в переданном
+        списке словарей.
+        :param scenes: Список словарей с данными о каждом снимке
         """
         self.__api.download_all(products=scenes,
                                 directory_path=self.__download_dir,
@@ -90,20 +91,22 @@ def obtain_data(start_date: datetime.date = db.get_last_date_from_layer(),
                 year: int = datetime.now().year,
                 cloud_max: int = settings.CLOUD_MAX,
                 download: bool = False) -> None:
-    """ Основная функция управления скриптом"""
-    gd = GetData(settings.USER_NAME, settings.PASSWORD, settings.API_URL, settings.DOWNLOAD_DIR)
+    """Основная функция управления скриптом."""
+    gd = GetData(
+            settings.USER_NAME,
+            settings.PASSWORD,
+            settings.API_URL,
+            settings.DOWNLOAD_DIR
+    )
 
     field_groups = db.get_field_groups()
     field_groups.sort()
 
     all_scenes = {}
 
-    if not download:
-        print('При запуске скрипта не был указан параметр -dw, будет происходить просто поиск изображений')
-    for group in field_groups:
+    for group in tqdm(field_groups):
         if group == 2:
             continue
-        print(f'Группа = {group}')
         lats_lons = db.get_bounds_lats_lons(year=year,
                                             field_group=group,
                                             dstype=settings.DESTSRID_OBTAIN)
@@ -117,7 +120,10 @@ def obtain_data(start_date: datetime.date = db.get_last_date_from_layer(),
                            cloud_max=cloud_max)
 
         all_scenes.update(scenes)
-        all_scenes = OrderedDict(sorted(all_scenes.items(), key=lambda t: t[1]['ingestiondate']))
+        all_scenes = OrderedDict(sorted(
+                all_scenes.items(),
+                key=lambda t: t[1]['ingestiondate']
+        ))
 
     # Словарь для выборки нужных снимков
     new_scenes = {}
