@@ -5,19 +5,19 @@ from xml.dom import minidom
 import numpy as np
 from osgeo import gdal, gdal_array
 
-from core.processing.dataset import GDALDatasetProcessing
+from processing.dataset import GDALDatasetProcessing
 
 gdal.UseExceptions()
 
 
 class ColorMap:
+    """Класс для парсинга и обработки цветовых qml схем."""
     MULTIPL = 1000
     STEP = 1
     MINVAL = 0
     MAXVAL = 255
 
     def __init__(self, color_map_path, nodata):
-
         self.color_map_path = color_map_path
         self.nodata = nodata
         self.cm = {}
@@ -169,6 +169,7 @@ class ColorMap:
         ]
 
     def create_rgba(self, src_path, dst_path):
+        """Создает RGBA-изображение из одноканального изображения."""
         src_ds = gdal.Open(src_path, gdal.GA_ReadOnly)
 
         try:
@@ -220,7 +221,7 @@ class ColorMap:
                 )
 
         except RuntimeError as e:
-            print('Unable to create rgda NDVI: "{}"'.format(e))
+            print('Unable to create rgba: "{}"'.format(e))
             sys.exit(-1)
         finally:
             src_ds = None
