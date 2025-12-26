@@ -1,2 +1,12 @@
 .idea
 *.env
+.env
+downloads/
+temp/
+intermediate/
+processed/
+ndvi/
+combine/
+works_files/styles_qgis/
+__pycache__/
+*.pyc
