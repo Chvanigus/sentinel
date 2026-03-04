@@ -40,40 +40,10 @@ class VectorProcessing:
 
         return {"ds": dst_ds, "layer": dst_layer, "path": self._dst_path}
 
-    def create_shape_file_from_wkt(self, wkt_geometry: str):
-        """
-        Создает shape файл из WKT геометрии.
-        :param wkt_geometry: WKT геометрия
-        :returns: Путь к выходному файлу
-        """
-        data = self._create_empty_shape_file()
-        layer = data["layer"]
-
-        geometry = ogr.CreateGeometryFromWkt(wkt_geometry)
-        feature = ogr.Feature(layer.GetLayerDefn())
-        feature.SetGeometryDirectly(geometry)
-        layer.CreateFeature(feature)
-        feature.Destroy()
-
-        data["ds"] = None
-
-        return data["path"]
-
     def _set_vector_translate_options(self):
         """Возвращает настройки перепроецирования вектора."""
         return gdal.VectorTranslateOptions(
             format=self._fm, dstSRS=self._dst_srs
-        )
-
-    def projection_vector(self) -> None:
-        """
-        Перепроецирование входного файла в заданную проекцию.
-        Сохраняет по указанному при инициализации класса пути.
-        """
-        gdal.VectorTranslate(
-            destNameOrDestDS=self._dst_path,
-            srcDS=self._src_path,
-            options=self._set_vector_translate_options()
         )
 
     def _set_vector_rasterization_options(
@@ -85,23 +55,4 @@ class VectorProcessing:
             format=self._fm, outputSRS=self._dst_srs, xRes=xRes, yRes=yRes,
             burnValues=burn_values, outputType=gdal.GDT_Int16, noData=0,
             outputBounds=bounds
-        )
-
-    def rasterization_vector(
-            self, bounds: list, xRes: int = 20, yRes: int = 20,
-            burn_values: int = 1,
-    ):
-        """
-        Растеризация вектора.
-        :param bounds: Границы по которым будет проходить растеризация.
-        :param xRes: Разрешение пикселей на метр по X координате.
-        :param yRes: Разрешение пикселей на метр по Y координате.
-        :param burn_values: Хз.
-        """
-        gdal.Rasterize(
-            destNameOrDestDS=self._dst_path,
-            srcDS=self._src_path,
-            options=self._set_vector_rasterization_options(
-                bounds=bounds, xRes=xRes, yRes=yRes, burn_values=burn_values
-            )
         )

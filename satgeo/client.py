@@ -1,159 +1,176 @@
-"""Клиентская часть Geoserver."""
-from .base import GeoServerBase
+"""GeoServerClient на базе geoserver-rest (geo.Geoserver.Geoserver)."""
+
+import requests
+from geoserver.catalog import Catalog
 
 from core import settings
 from core.logging import get_logger
 
 
-def _format_path(path: str) -> str:
-    """
-    Помогает собрать полный REST-путь для GeoServer.
-    """
-    return f"{path}"  # TODO при необходимости добавить базовый URL
-
-
-class GeoServerClient(GeoServerBase):
-    """
-    Обёртка над geoserver.catalog и REST API GeoServer.
-
-    Предоставляет методы для управления workspace, stores и coverage,
-    а также для управления GWC кешем.
-
-    Attributes:
-        workspace (str): Название рабочего пространства GeoServer.
-        logger (logging.Logger): Логгер для вывода информации и ошибок.
-    """
+class GeoServerClient:
+    """Клиент для GeoServer на основе geoserver-rest."""
 
     def __init__(self):
-        """
-        Инициализирует GeoServerClient.
-
-        Получает базовую авторизацию и REST-сессию из GeoServerBase,
-        настраивает workspace.
-        """
-        super().__init__()
-        self.logger = get_logger()
-        self.workspace = settings.WORKSPACE
-
-    def ensure_workspace(self):
-        """
-        Убеждается, что workspace существует в GeoServer.
-
-        Возвращает объект Workspace.
-
-        :return: Объект Workspace из geoserver.catalog
-        """
-        self.logger.info(f"Проверка workspace: '{self.workspace}'")
-        ws = self.catalog.get_workspace(self.workspace)
-        if not ws:
-            self.logger.info(
-                f"Workspace '{self.workspace}' не найден, создаём..."
-            )
-            ws = self.catalog.create_workspace(self.workspace)
-            self.logger.info(f"Workspace '{self.workspace}' создан.")
-        else:
-            self.logger.debug(f"Workspace '{self.workspace}' уже существует.")
-        return ws
-
-    def delete_store(self, store_name: str) -> bool:
-        """
-        Удаляет существующий coverage-store вместе со всеми ресурсами.
-
-        :param store_name: Имя покрытия (coverage-store) для удаления.
-        :return: True, если удаление прошло успешно, иначе False.
-        """
-        path = f"workspaces/{self.workspace}/coveragestores/{store_name}"
-        self.logger.info(
-            f"Удаление store '{store_name}' в workspace '{self.workspace}'"
+        self.cat = Catalog(
+            f"http://{settings.GS_HOST}/geoserver/rest",
+            settings.GS_USERNAME, settings.GS_PASSWORD
         )
-        resp = self.delete(path,
-                           params={"recurse": "true", "purge": "all"},
-                           headers=settings.HEADERS_XML)
-        if resp.ok:
-            self.logger.info(f"Store '{store_name}' успешно удалён.")
-        else:
-            self.logger.warning(
-                f"Не удалось удалить store '{store_name}'. HTTP {resp.status_code}"
-            )
-            self.logger.error(resp.text)
-        return resp.ok
+        self.workspace = settings.GS_WORKSPACE
+        self.logger = get_logger(__class__.__name__)
 
-    def create_store(self, store_name: str, file_path: str):
-        """
-        Создаёт новый coverage-store на основе GeoTIFF файла.
+    def get_or_create_store(
+            self,
+            store_name: str,
+            container_path: str,
+    ):
+        """Создаём или возвращаем store."""
+        store = self.cat.get_store(store_name, workspace=self.workspace)
+        if store:
+            return store
 
-        :param store_name: Имя нового coverage-store.
-        :param file_path: Абсолютный путь к GeoTIFF файлу на сервере.
-        :return: Объект Store после сохранения.
-        """
-        self.logger.info(
-            f"Создание store '{store_name}' с файлом '{file_path}'"
+        self.logger.info("Создаём store: %s", store_name)
+
+        store = self.cat.create_coveragestore(
+            name=store_name,
+            workspace=self.workspace,
+            path=container_path,
         )
-        store = self.catalog.create_coveragestore2(name=store_name,
-                                                   workspace=self.workspace)
         store.type = "GeoTIFF"
-        store.url = f"file://{file_path}"
-        self.save_catalog(store)
-        self.logger.info(f"Store '{store_name}' создан, URL={store.url}")
-        return self.catalog.get_store(store_name, self.workspace)
+        store.url = f"file://{container_path}"
+        self.cat.save(store)
 
-    def create_coverage(self, store, coverage_name: str):
+        self.logger.info(f"Store %s успешно создан", store_name)
+
+        return store
+
+    def set_layer_style(self, layer_name: str, style_name: str) -> None:
+        """Устанавливаем стиль для слоя."""
+        layer = self.cat.get_layer(layer_name)
+        if not layer:
+            raise RuntimeError(
+                "Слой %s не найден в GeoServer", layer_name
+            )
+
+        layer._set_default_style(style_name)
+        self.cat.save(layer)
+
+    def enable_gwc_gridset_3857(self, layer_name: str) -> bool:
         """
-        Создаёт coverage (слой) в заданном store, если он ещё не существует.
-
-        :param store: Объект Store, в котором создаётся coverage.
-        :param coverage_name: Имя coverage и слоя.
-        :return: Объект Layer или None, если ошибка.
+        Включить тайловый кэш для слоя и задать GridSet EPSG:3857.
         """
-        self.logger.info(f"Проверка существования coverage '{coverage_name}'")
-        layer = self.catalog.get_layer(coverage_name)
-        if layer:
-            self.logger.debug(f"Coverage '{coverage_name}' уже существует.")
-            return layer
+        full_layer = f"{self.workspace}:{layer_name}"
 
-        xml = f"""
-        <coverage>
-          <name>{coverage_name}</name>
-          <title>{coverage_name}</title>
-          <srs>EPSG:{settings.DESTSRID}</srs>
-          <parameters>
-            <entry><string>SUGGESTED_TILE_SIZE</string>
-            <string>{settings.TILE_SIZE},{settings.TILE_SIZE}</string>
-            </entry>
-          </parameters>
-        </coverage>"""
-        path = f"workspaces/{self.workspace}/coveragestores/{store.name}/coverages"
-        self.logger.info(
-            f"Создание coverage '{coverage_name}' в store '{store.name}'"
+        url = f"http://{settings.GS_HOST}/geoserver/gwc/rest/layers/{full_layer}.xml"
+
+        payload = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <GeoServerLayer>
+          <name>{full_layer}</name>
+          <enabled>true</enabled>
+          <gridSubsets>
+            <gridSubset>
+              <gridSetName>WebMercatorQuad</gridSetName>
+            </gridSubset>
+          </gridSubsets>
+          <metaWidthHeight>
+            <int>1</int>
+            <int>1</int>
+          </metaWidthHeight>
+          <mimeFormats>
+            <string>image/png</string>
+          </mimeFormats>
+        </GeoServerLayer>
+        """
+
+        headers = {"Content-Type": "application/xml"}
+
+        resp = requests.put(
+            url, data=payload.encode("utf-8"),
+            auth=(settings.GS_USERNAME, settings.GS_PASSWORD),
+            headers=headers, timeout=30
         )
-        resp = self.post(path, xml, headers=settings.HEADERS_XML)
-        if not resp.ok:
-            self.logger.error(
-                f"Ошибка создания coverage '{coverage_name}': HTTP {resp.status_code}")
-            return None
-        self.logger.info(f"Coverage '{coverage_name}' успешно создан.")
-        return self.catalog.get_layer(coverage_name)
 
-    def seed_gwc(self, layer_name: str, zoom_start: int, zoom_stop: int):
-        """
-        Запускает процесс автоматического кеширования (reseed) через GWC.
+        if resp.status_code in (200, 201, 204):
+            self.logger.info(
+                "GWC: успешно включён кеш для %s (GridSet EPSG:3857)",
+                layer_name
+            )
+            return True
 
-        :param layer_name: Имя слоя для кеширования.
-        :param zoom_start: Начальный уровень зума.
-        :param zoom_stop: Конечный уровень зума.
+        raise RuntimeError(
+            f"GWC GridSet установка провалена: {resp.status_code} {resp.text}"
+        )
+
+    def seed_gwc_cache(
+            self,
+            layer_name: str,
+            bbox: tuple[float, float, float, float],
+            zoom_start: int = 0,
+            zoom_stop: int = 14,
+            image_format: str = "image/png",
+            threads: int = 4,
+    ) -> bool:
         """
+        Прогрев тайлов GeoWebCache (seed), чтобы фронт сразу получал готовый кэш.
+        """
+        if zoom_start < 0 or zoom_stop < 0 or zoom_start > zoom_stop:
+            raise ValueError("Неверный диапазон zoom_start/zoom_stop")
+
+        minx, miny, maxx, maxy = bbox
+        if not (minx < maxx and miny < maxy):
+            raise ValueError(f"Неверный bbox: {bbox}")
+
+        full_layer = f"{self.workspace}:{layer_name}"
+
+        url = f"http://{settings.GS_HOST}/geoserver/gwc/rest/seed/{full_layer}.xml"
+
+        payload = f"""<?xml version="1.0" encoding="UTF-8"?>
+                <seedRequest>
+                  <name>{full_layer}</name>
+                  <gridSetId>WebMercatorQuad</gridSetId>
+                  <zoomStart>{zoom_start}</zoomStart>
+                  <zoomStop>{zoom_stop}</zoomStop>
+                  <type>seed</type>
+                  <format>{image_format}</format>
+                  <threadCount>{threads}</threadCount>
+                  <metaWidthHeight>
+                    <int>8</int>
+                    <int>8</int>
+                  </metaWidthHeight>
+                  <bounds>
+                    <coords>
+                      <double>{minx}</double>
+                      <double>{miny}</double>
+                      <double>{maxx}</double>
+                      <double>{maxy}</double>
+                    </coords>
+                  </bounds>
+                </seedRequest>
+                """
+
+        headers = {"Content-Type": "application/xml"}
+
         self.logger.info(
-            f"Запуск reseed GWC для '{layer_name}' ({zoom_start}-{zoom_stop})")
-        xml = f"""
-        <seedRequest>
-          <name>{self.workspace}:{layer_name}</name>
-          <srs><number>{settings.DESTSRID}</number></srs>
-          <zoomStart>{zoom_start}</zoomStart>
-          <zoomStop>{zoom_stop}</zoomStop>
-          <format>image/png8</format>
-          <type>reseed</type>
-          <threadCount>4</threadCount>
-        </seedRequest>"""
-        path = f"gwc/rest/seed/{self.workspace}:{layer_name}.xml"
-        self.post(path, xml, headers=settings.HEADERS_XML)
-        self.logger.info(f"GWC reseed для '{layer_name}' инициирован.")
+            "GWC SEED bbox: %s zoom=%s-%s bbox=%s",
+            full_layer,
+            zoom_start,
+            zoom_stop,
+            bbox,
+        )
+
+        resp = requests.post(
+            url,
+            data=payload.encode("utf-8"),
+            auth=(settings.GS_USERNAME, settings.GS_PASSWORD),
+            headers=headers,
+            timeout=600,
+        )
+
+        if resp.status_code in (200, 201, 202):
+            self.logger.info(
+                "GWC SEED bbox успешно запущен: %s", full_layer
+            )
+            return True
+
+        raise RuntimeError(
+            f"GWC bbox seed ошибка: {resp.status_code} {resp.text}"
+        )

@@ -3,16 +3,15 @@ import dataclasses
 import os
 import sys
 from datetime import datetime
-from typing import List, Optional, Type, Tuple
+from typing import List, Optional, Tuple
 
 import geojson as gj
 import psycopg2
 from psycopg2.extensions import connection as _connection
-from psycopg2.extras import DictCursor, DictRow, execute_batch
+from psycopg2.extras import DictCursor, execute_batch
 
 from core.logging import get_logger
 from db.data_class import NdviValues, Field, Layer
-from db.utils import get_count_s
 
 
 class PostgisConnector:
@@ -23,7 +22,7 @@ class PostgisConnector:
     def __init__(self, pg_conn: _connection) -> None:
         self.con = pg_conn
         self.cur = self.con.cursor(cursor_factory=DictCursor)
-        self.logger = get_logger()
+        self.logger = get_logger("DBConnector")
 
     def __enter__(self):
         return self
@@ -35,23 +34,22 @@ class PostgisConnector:
             self.con.close()
 
     @staticmethod
-    def _get_count_s(table: str, id_flag: bool = False) -> str:
+    def _get_field_names(table: dataclasses.dataclass) -> List[str]:
         """
-        Возвращает количество %s в виде строки формата: '%s,%s...'
-        :param table: Таблица описанная как dataclasses.dataclass
-        :param id_flag: Учитывать поле ID или нет
-        :return: Строка вида '%s,%s...'
+        Возвращает список полей dataclass в определённом порядке.
         """
-        return get_count_s(table=table, id_flag=id_flag)
+        return list(table.__dataclass_fields__.keys())
 
-    @staticmethod
-    def _get_field_name(table: dataclasses.dataclass) -> list:
+    def _get_insertable_fields(self,
+                               table: dataclasses.dataclass,
+                               id_flag: bool = False) -> List[str]:
         """
-        Возвращает поля таблицы.
-        :param table: Таблица описанная как dataclasses.dataclass
-        :return: Список полей таблицы
+        Возвращает список колонок, которые будут вставляться (с учётом id_flag).
         """
-        return table.__dataclass_fields__.keys()
+        fields = self._get_field_names(table)
+        if not id_flag and 'id' in fields:
+            fields = [f for f in fields if f != 'id']
+        return fields
 
     def _get_query_to_save(
             self, table, id_flag: bool = False,
@@ -59,40 +57,28 @@ class PostgisConnector:
     ) -> str:
         """
         Возвращает SQL запрос для сохранения данных в БД.
-        :param table: Таблица описанная через dataclasses.dataclass.
-        :param id_flag: Учитывать флаг ID или нет.
-        :param on_conflict_fields: Строка в виде набора полей,
-                                   которые учитываются при конфликте данных.
-        :return: Строка запроса для сохранения данных в БД.
+        Формат: INSERT INTO "gpgeo"."table" ("col1","col2",...)
+        VALUES (%s,%s,...) ON CONFLICT (...) DO NOTHING;
         """
-        count_s = self._get_count_s(table=table, id_flag=id_flag)
-        field_names = self._get_field_name(table)
+        insert_fields = self._get_insertable_fields(table, id_flag=id_flag)
+        placeholders = ",".join(["%s"] * len(insert_fields))
+        # Добавляем кавычки на имена колонок (без схемы)
+        cols_sql = ", ".join([f'"{c}"' for c in insert_fields])
 
-        if id_flag:
-            query = f"""
-                INSERT INTO "gpgeo"."{table.TableName()}" 
-                VALUES ({count_s}) 
-                ON CONFLICT ({on_conflict_fields}) DO NOTHING;
-                """
-        else:
-            field_names = filter(lambda x: x != 'id', field_names)
-            query = f"""
-                    INSERT INTO "gpgeo"."{table.TableName()}" 
-                    ({", ".join(field_names)}) 
-                    VALUES ({count_s})
-                    ON CONFLICT ({on_conflict_fields}) DO NOTHING;
-                    """
-
+        query = (
+            f'INSERT INTO "gpgeo"."{table.TableName()}" '
+            f'({cols_sql}) VALUES ({placeholders}) '
+            f'ON CONFLICT ({on_conflict_fields}) DO NOTHING;'
+        )
         return query
 
     def get_tuples_data_for_save(
             self, table: dataclasses.dataclass, data: list
-    ) -> List[tuple] or None:
+    ) -> Optional[List[tuple]]:
         """
         Возвращает список данных преобразованных в кортеж для сохранения в БД.
-        :param table: Таблица описанная через dataclasses.dataclass.
-        :param data: Список данных для сохранения в БД.
-        :return: Список кортежей для сохранения в БД.
+        Поддерживает список кортежей или список объектов dataclass с
+        методом to_tuple() или .to_tuple эмитируется внешне.
         """
         tuple_data = []
         try:
@@ -100,68 +86,82 @@ class PostgisConnector:
                 if isinstance(it, tuple):
                     tuple_data.append(it)
                 else:
-                    tuple_data.append(it.to_tuple())
+                    # Если объект — dataclass, попробуем получить в порядке полей
+                    if hasattr(it, "to_tuple"):
+                        tuple_data.append(it.to_tuple())
+                    else:
+                        # Попробуем собрать tuple по полям dataclass автоматически
+                        fields = list(it.__class__.__dataclass_fields__.keys())
+                        values = tuple(getattr(it, f) for f in fields)
+                        tuple_data.append(values)
             return tuple_data
         except AttributeError:
             self.logger.error(
-                f"Не удалось преобразовать данные в кортеж. "
-                f"Проверьте, что данные переданы в виде списка "
-                f"объектов класса {table.__name__} или в виде списка кортежей."
+                "Не удалось преобразовать данные в кортеж. "
+                "Проверьте, что данные переданы в виде списка объектов "
+                "класса %s или в виде списка кортежей.",
+                table.__name__
             )
             return None
 
-    def extract_all(
-            self, query: str, _vars: tuple = None
-    ) -> Optional[List[DictRow]]:
-        """
-        Экстрактор для получения списка данных.
-        :param query: SQL запрос
-        :param _vars: Кортеж переменных для запроса.
-                      Порядок переменных должен соответствовать порядку полей
-                      в таблице.
-        """
+    def extract_all(self,
+                    query: str,
+                    _vars: tuple = None) -> Optional[List[dict]]:
+        """Извлекает все данные из БД."""
         try:
             self.cur.execute(query, _vars)
             return self.cur.fetchall()
         except psycopg2.Error as e:
-            self.logger.critical(f"Ошибка при попытке выполнения запроса: {e}")
+            self.logger.critical(
+                "Ошибка при попытке выполнения запроса: %s", e
+            )
             sys.exit(-1)
 
-    def extract_one(
-            self, query: str, _vars: tuple = None
-    ) -> Optional[DictRow]:
-        """
-        Экстрактор для получения единичной записи.
-        :param query: SQL запрос
-        :param _vars: Кортеж переменных запроса.
-                      Порядок переменных должен соответствовать порядку полей
-                      в таблице.
-        """
+    def extract_one(self, query: str, _vars: tuple = None) -> Optional[dict]:
+        """Извлекает одну запись из БД."""
         try:
             self.cur.execute(query, _vars)
             return self.cur.fetchone()
         except psycopg2.Error as e:
-            self.logger.critical(f"Ошибка при попытке выполнения запроса: {e}")
+            self.logger.critical(
+                "Ошибка при попытке выполнения запроса: %s", e
+            )
             sys.exit(-1)
 
-    def save_one(
-            self, table: dataclasses.dataclass, _vars: tuple,
-            id_flag: bool = False,
-            on_conflict_fields: str = "id"
-    ) -> bool:
+    def save_one(self,
+                 table: dataclasses.dataclass,
+                 _vars: dataclasses.dataclass or tuple,
+                 id_flag: bool = False,
+                 on_conflict_fields: str = "id") -> bool:
         """
-        Сохранение одной записи для переданного запроса.
-        :param table: Таблица описанная через Dataclass, в которую
-                      требуется сохранить данные.
-        :param _vars: Кортеж переменных для запроса.
-                      Порядок переменных должен соответствовать порядку полей
-                      в таблице.
-        :param id_flag: True если нужно ID поле. False - если не надо.
-        :param on_conflict_fields: Строка в виде набора полей,
-                                   которые учитываются при конфликте данных.
+        Сохранение одной записи.
+        Проверяет, что количество переданных переменных соответствует
+        ожидаемому числу колонок.
         """
+        if isinstance(_vars, type) and dataclasses.is_dataclass(_vars):
+            raise TypeError(
+                "save_one: передан dataclass-класс, ожидается экземпляр или tuple. "
+                "Используйте _vars=layer (объект) или _vars=(...tuple...)."
+            )
+
+        expected_fields = self._get_insertable_fields(table, id_flag=id_flag)
+
+        if dataclasses.is_dataclass(_vars):
+            _vars = tuple(getattr(_vars, f) for f in expected_fields)
+
+        if len(_vars) != len(expected_fields):
+            msg = (
+                f"save_one: несоответствие количества переменных.\n"
+                f"Ожидалось: {len(expected_fields)} {expected_fields}\n"
+                f"Получено:  {len(_vars)} {_vars}"
+            )
+            self.logger.error(msg)
+            self.con.rollback()
+            raise ValueError(msg)
+
         query = self._get_query_to_save(
-            table=table, id_flag=id_flag,
+            table=table,
+            id_flag=id_flag,
             on_conflict_fields=on_conflict_fields
         )
 
@@ -170,27 +170,20 @@ class PostgisConnector:
             self.con.commit()
             return True
         except psycopg2.Error as e:
-            self.logger.error(f"Ошибка при попытке выполнения запроса: {e}")
-            self.con.commit()
-            sys.exit(-1)
+            self.con.rollback()
+            self.logger.error(
+                f"Ошибка save_one: %s\nSQL: %s\nVARS: %s",
+                e, query, _vars
+            )
+            raise
 
     def save_all(
             self, table: dataclasses.dataclass,
-            data: List[Type[dataclasses.dataclass]] or List[Tuple],
+            data: List[dataclasses.dataclass] or List[Tuple],
             id_flag: bool = False,
             on_conflict_fields: str = "id"
     ) -> bool:
-        """
-        Сохранение списка записей для переданного запроса.
-        :param table: Таблица описанная через Dataclass, в которую
-                      требуется сохранить данные.
-        :param data:  Список записей для сохранения.
-        :param id_flag: True если нужно ID поле. False - если не надо.
-        :param on_conflict_fields: Список полей в виде строки, которые
-                                   учитываются при внесении данных.
-                                   Если будет конфликт данных -
-                                   запись будет пропущена.
-        """
+        """Сохранение всех записей."""
         tuple_data = self.get_tuples_data_for_save(table, data)
         if tuple_data is None:
             return False
@@ -205,8 +198,17 @@ class PostgisConnector:
             self.con.commit()
             return True
         except psycopg2.Error as err:
-            self.logger.error(f"{err}")
-            self.con.commit()
+            try:
+                self.con.rollback()
+            except Exception as e:
+                self.logger.error(
+                    "Ошибка при откате транзакции: %s", e
+                )
+                pass
+            self.logger.error(
+                "Ошибка в save_all: %s; SQL: %s",
+                err, query
+            )
             return False
 
 
@@ -346,21 +348,45 @@ class PostgisWorker:
             )
 
     def insert_layer(self, layer: Layer) -> None:
-        """Сохраняет данные в таблицу gpgeo.maps_layer."""
-        if not self.check_layer(layer):
-            self.conn.save_one(
-                table=Layer, id_flag=False,
-                _vars=(
-                    layer.date,
-                    None,
-                    layer.set,
-                    layer.resolution,
-                    layer.agroid,
-                    layer.name,
-                    layer.satellite,
-                    layer.isgrouplayer
-                )
-            )
+        """
+        Сохраняет слой в таблицу gpgeo.maps_layer.
+        """
+
+        if self.check_layer(layer):
+            return
+
+        self.conn.save_one(
+            table=Layer,
+            _vars=layer,
+            id_flag=False, on_conflict_fields="name"
+        )
+
+    def has_ndvi_records_for_agro(
+            self, agroid: int, year: int, date_obj: datetime
+    ) -> bool:
+        """
+        Проверяет: есть ли уже NDVI-записи в БД для этого агро и даты.
+        """
+        fields = self.get_fieldids_from_agro(agroid, year)
+        if not fields:
+            return False
+
+        field_ids = [f.id for f in fields]
+
+        query = """
+        SELECT 1
+        FROM gpgeo.maps_ndvi_values
+        WHERE date = %s
+          AND fieldid = ANY(%s)
+        LIMIT 1
+        """
+
+        result = self.conn.extract_one(
+            query=query,
+            _vars=(date_obj, field_ids)
+        )
+
+        return result is not None
 
 
 def get_postgis_worker(pg_conn: _connection) -> PostgisWorker:

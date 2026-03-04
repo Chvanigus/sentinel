@@ -1,8 +1,7 @@
 """Класс для работы с индексами спутниковых снимков."""
-from typing import Tuple, Union, Any, Optional, Callable
+from typing import Optional, Callable
 
 import numpy as np
-from osgeo import gdal
 
 from processing.dataset import GDALDatasetProcessing, GDALDatasetContextManager
 
@@ -13,11 +12,11 @@ class IndexProcessing:
     """Класс для создания пространственных индексов."""
 
     def __init__(
-        self,
-        output_file: str,
-        b03_file: Optional[str] = None,
-        b04_file: Optional[str] = None,
-        b08_file: Optional[str] = None,
+            self,
+            output_file: str,
+            b03_file: Optional[str] = None,
+            b04_file: Optional[str] = None,
+            b08_file: Optional[str] = None,
     ):
         self._b03_file = b03_file
         self._b04_file = b04_file

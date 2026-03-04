@@ -105,13 +105,6 @@ class GDALDatasetProcessing:
 
         return dst_ds
 
-    def create_output_ds(self) -> gdal.Dataset:
-        """
-        Создает выходной gdal.Dataset на основе заданных параметров
-        :returns: gdal.Dataset.
-        """
-        return self._create_output_dataset()
-
     def create_file_from_array(self):
         """
         Создание файла из массива пикселей.
@@ -126,16 +119,3 @@ class GDALDatasetProcessing:
         driver = self._set_transform_and_projection(driver)
         driver.FlushCache()
         driver = None
-
-    def save_ds_to_geotiff_file(self) -> None:
-        """
-        Сохраняет gdal.Dataset в новый tiff файл по указанному пути.
-        """
-
-        dst_ds = self._create_output_dataset()
-        for band in range(self._nband):
-            band += 1
-            dst_ds.GetRasterBand(band).WriteArray(
-                self._src_ds.GetRasterBand(band).ReadAsArray()
-            )
-        dst_ds = None

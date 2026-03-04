@@ -16,13 +16,16 @@ class CombineImageProcessor(BaseImageProcessor):
     """
 
     def _process_files(self):
-        products = ["tci", "scl", "ndvi", "ndwi"]
+        products = ["tci", "ndvi", "ndwi"]
         stage_cfg = {
             "tci": 10,
-            "scl": 20,
             "ndvi": 10,
             "ndwi": 10,
         }
+
+        if not self.level == "msil1c":
+            products.append("scl")
+            stage_cfg["scl"] = 20
 
         for prod in products:
             size = stage_cfg[prod]
@@ -34,25 +37,31 @@ class CombineImageProcessor(BaseImageProcessor):
 
             if len(tiles) < 2:
                 self.logger.info(
-                    f"[{prod}] найдено {len(tiles)} тайлов за {self.date} → пропуск")
+                    "[%s] найдено %s тайлов за %s → пропуск",
+                    prod, len(tiles), self.date
+                )
                 continue
 
             dst = self.pm.get_destination(stage=prod)
 
             if os.path.exists(dst):
-                self.logger.info(f"[{prod}] {dst} уже есть → пропуск")
+                self.logger.info("[%s] %s уже есть → пропуск", prod, dst)
                 continue
 
             self.logger.info(
-                f"[{prod}] объединяем {len(tiles)} тайлов → {dst}")
+                "[%s] объединяем %s тайлов → %s", prod, len(tiles), dst
+            )
             vrt = gdal.BuildVRT("/vsimem/temp_combine.vrt", tiles)
             if not vrt:
-                self.logger.error(f"[{prod}] не удалось собрать VRT")
+                self.logger.error(
+                    "[%s] не удалось собрать VRT -> пропуск", prod
+                )
                 continue
 
-            gdal.Translate(dst, vrt, xRes=size, yRes=size,
-                           format=const.FORMAT_GEOTIFF)
-            self.logger.info(f"[{prod}] успешно объединено → {dst}")
+            gdal.Translate(
+                dst, vrt, xRes=size, yRes=size, format=const.FORMAT_GEOTIFF
+            )
+            self.logger.info("[%s] успешно объединено → %s", prod, dst)
 
     @staticmethod
     def _extract_tile(path: str) -> str:
@@ -92,16 +101,14 @@ class CombinePathManager(BasePathManager):
     def get_destination(self, stage, agroid=1):
         """
         Строим путь итогового объединённого изображения:
-        - TCI → включаем tile в имя
-        - остальное → нет
         """
         size = self.STAGE_SIZES.get(stage, 10)
         name = f"{self.satellite}_{self.date}_a1_{stage}_{size}m_3857.tif"
 
-        if stage == "tci":
-            base = settings.PROCESSED_DIR
-        else:
+        if size == 20:
             base = settings.INTERMEDIATE
+        else:
+            base = settings.PROCESSED_DIR
 
         return os.path.join(base, name)
 

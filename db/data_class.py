@@ -2,6 +2,7 @@
 import dataclasses
 import datetime
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -34,7 +35,7 @@ class MainMixin:
 @dataclass
 class FieldidMixin:
     """Миксин поля fieldid."""
-    fieldid: int = field(default="")
+    fieldid: Optional[int] = None
 
 
 @dataclass
@@ -47,11 +48,8 @@ class DateMixin:
 class Layer(MainMixin, FieldidMixin, DateMixin):
     """Модель таблицы gpgeo.Layer."""
     set: str = field(default="")
-    resolution: int = field(default="")
-    agroid: int = field(default="")
+    agroid: int = 0
     name: str = field(default="")
-    satellite: str = field(default="")
-    isgrouplayer: bool = field(default=False)
 
     @staticmethod
     def TableName() -> str:

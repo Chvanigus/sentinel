@@ -37,7 +37,6 @@ class NdviFieldAnalyzer:
             ndvi_path: str = None,
             agroid: int = None,
             fieldcode: str = None,
-            save_canny: bool = False
     ) -> NdviValues or None:
         """
         Выполняет анализ массива NDVI по одному полю.
@@ -187,27 +186,43 @@ class NdviFieldAnalyzer:
 class NdviStatisticsImageProcessor(BaseImageProcessor):
     """Класс для сбора и анализа статистики NDVI по спутниковым снимкам."""
 
-    def __init__(self, tile, date, satellite, path_manager) -> None:
-        super().__init__(tile, date, satellite, path_manager)
+    def __init__(self,
+                 tile,
+                 date,
+                 satellite,
+                 path_manager,
+                 level = None) -> None:
+        super().__init__(tile, date, satellite, path_manager, level)
         self.agroids = [1, 3, 4, 5, 6]
         self.date_obj = get_date_obj(date)
         self.analyzer = NdviFieldAnalyzer(nodata_value=-9999.0)
 
-    @staticmethod
-    def _get_fields_list(agroid: int) -> list:
+    def _get_fields_list(self, agroid: int) -> list:
         with psycopg2.connect(**DSL) as pg_conn:
             pw = get_postgis_worker(pg_conn)
             fields = pw.get_fieldids_from_agro(
-                agroid=agroid, year=settings.YEAR
+                agroid=agroid, year=self.date_obj.year
             )
         return fields
+
+    def _has_ndvi_records_for_agro(self, agroid: int, year: int) -> bool:
+        """
+        Быстрая проверка: есть ли для заданной даты записи
+        NDVI для полей этого агро.
+        Возвращает True, если хотя бы одна запись уже есть.
+        """
+        with psycopg2.connect(**DSL) as pg_conn:
+            pw = get_postgis_worker(pg_conn)
+            return pw.has_ndvi_records_for_agro(
+                agroid=agroid, year=year, date_obj=self.date_obj
+            )
 
     def _save_field_geojson(self, field: Field, agroid: int) -> None:
         with psycopg2.connect(**DSL) as pg_conn:
             pw = get_postgis_worker(pg_conn)
             pw.save_field_geojson(
                 fieldid=field.id, fieldname=field.name,
-                agroid=agroid, year=settings.YEAR,
+                agroid=agroid, year=self.date_obj.year,
                 dst_path=settings.NDVI_DIR, date=self.date
             )
 
@@ -218,12 +233,19 @@ class NdviStatisticsImageProcessor(BaseImageProcessor):
             pw.insert_ndvi_data(ndvi_values=ndvi_values)
 
     def _process_files(self):
-        # 1) Для каждого агро: берём фильтрованный NDVI, список полей, анализируем
         for agroid in self.agroids:
             src_ndvi = self.pm.get_sources(stage="ndvi", agroid=agroid)[0]
-            self.logger.info(f"Агро {agroid}: проверка {src_ndvi}")
+            self.logger.info("Агро %s: проверка %s", agroid, src_ndvi)
             if not os.path.exists(src_ndvi):
-                self.logger.warning(f"NDVI не найден → пропуск: {src_ndvi}")
+                self.logger.warning("NDVI не найден → пропуск: %s", src_ndvi)
+                continue
+
+            year = self.date_obj.year
+            if self._has_ndvi_records_for_agro(agroid, year):
+                self.logger.info(
+                    "Агро %s: NDVI уже рассчитан за %s — пропуск",
+                    agroid, self.date
+                )
                 continue
 
             fields = self._get_fields_list(agroid)
@@ -236,7 +258,7 @@ class NdviStatisticsImageProcessor(BaseImageProcessor):
                     self._save_field_geojson(field, agroid)
 
                 if not os.path.exists(geojson):
-                    self.logger.warning(f"GeoJSON не найден → {geojson}")
+                    self.logger.warning("GeoJSON не найден → %s", geojson)
                     continue
 
                 dst_tif = self.pm.field_ndvi_tif(agroid, field.name)
@@ -254,14 +276,15 @@ class NdviStatisticsImageProcessor(BaseImageProcessor):
                     ndvi_path=dst_tif,
                     agroid=agroid,
                     fieldcode=field.name,
-                    save_canny=True
                 )
                 if val:
                     ndvi_values.append(val)
 
             if ndvi_values:
                 self.logger.info(
-                    f"Агро {agroid}: сохраняем {len(ndvi_values)} записей в БД")
+                    "Агро %s: сохраняем %s записей в БД",
+                    agroid, len(ndvi_values)
+                )
                 self._save_ndvi_values_for_agro(ndvi_values)
 
     @staticmethod
@@ -285,12 +308,14 @@ class NdviStatsPathManager(BasePathManager):
         """В данном случае у нас нет выходного файла."""
         pass
 
-    def get_sources(self, *, stage: str, agroid: Optional[int] = None) -> List[
-        str]:
+    def get_sources(
+            self, *, stage: str, agroid: Optional[int] = None
+    ) -> List[str]:
         return [
             os.path.join(
                 settings.INTERMEDIATE,
-                f"{self.satellite}_{self.date}_a{agroid}_ndvi_10m_3857_filtered.tif")
+                f"{self.satellite}_{self.date}_a{agroid}_ndvi_10m_3857_filtered.tif"
+            )
         ]
 
     def field_geojson(self, agroid: int, fieldcode: str) -> str:

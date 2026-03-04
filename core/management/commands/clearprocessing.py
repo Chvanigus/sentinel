@@ -26,7 +26,6 @@ class Command(BaseCommand):
         remove_dirs = [
             settings.INTERMEDIATE,
             settings.PROCESSED_DIR,
-            settings.COMBINE_DIR,
             settings.NDVI_DIR,
             settings.TEMP_PROCESSING_DIR,
         ]

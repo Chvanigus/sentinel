@@ -93,7 +93,7 @@ class BaseCommand(ABC):
     _called_from_command_line: bool = False
 
     def __init__(self):
-        self.logger = get_logger()
+        self.logger = get_logger(name=self.__class__.__name__)
 
     def create_parser(self, prog_name, subcommand, **kwargs) -> CommandParser:
         """

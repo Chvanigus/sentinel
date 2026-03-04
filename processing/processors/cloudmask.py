@@ -10,10 +10,19 @@ from processing.processors.base import BaseImageProcessor, BasePathManager
 
 
 class RescaleSCLProcessor(BaseImageProcessor):
-    """Ресемплирует маску облачности (SCL) до 10м, основываясь на разрешении NDVI."""
+    """
+    Ресемплирует маску облачности (SCL) до 10м,
+    основываясь на разрешении NDVI.
+    """
 
-    def __init__(self, tile, date, satellite, agroids, path_manager):
-        super().__init__(tile, date, satellite, path_manager)
+    def __init__(self,
+                 tile,
+                 date,
+                 satellite,
+                 agroids,
+                 path_manager,
+                 level=None):
+        super().__init__(tile, date, satellite, path_manager, level)
         self.agroids = agroids
 
     def _process_files(self):
@@ -26,7 +35,8 @@ class RescaleSCLProcessor(BaseImageProcessor):
 
             if os.path.exists(scl_dst):
                 self.logger.info(
-                    f"SCL_10m для агро {agroid} уже есть → пропуск")
+                    "SCL_10m для агро %s уже есть → пропуск", agroid
+                )
                 continue
 
             ndvi_ds = gdal.Open(ndvi_path)
@@ -40,15 +50,21 @@ class RescaleSCLProcessor(BaseImageProcessor):
                 xRes=xres, yRes=yres,
                 resampleAlg=gdal.GRA_Bilinear
             )
-            self.logger.info(f"SCL ресемплирован до 10м: {scl_dst}")
+            self.logger.info("SCL ресемплирован до 10м: %s", scl_dst)
 
 
 class FilterNDVIProcessor(BaseImageProcessor):
     """Фильтрует NDVI с использованием SCL-маски (10м)."""
     VALID_SCL_VALUES = [4, 5, 6, 7]
 
-    def __init__(self, tile, date, satellite, agroids, path_manager):
-        super().__init__(tile, date, satellite, path_manager)
+    def __init__(self,
+                 tile,
+                 date,
+                 satellite,
+                 agroids,
+                 path_manager,
+                 level=None):
+        super().__init__(tile, date, satellite, path_manager, level)
         self.agroids = agroids
 
     def _process_files(self, *_):
@@ -62,7 +78,9 @@ class FilterNDVIProcessor(BaseImageProcessor):
 
             if os.path.exists(dst_ndvi):
                 self.logger.info(
-                    f"Фильтрованный NDVI уже есть для агро {agroid} → пропуск")
+                    "Фильтрованный NDVI уже есть для агро %s → пропуск",
+                    agroid
+                )
                 continue
 
             scl_ds = gdal.Open(scl_path)
@@ -93,7 +111,7 @@ class FilterNDVIProcessor(BaseImageProcessor):
                 scl_path, dst_ndvi, filtered
             ).create_file_from_array()
 
-            self.logger.info(f"NDVI отфильтрован для агро {agroid}")
+            self.logger.info("NDVI отфильтрован для агро %s", agroid)
 
     @staticmethod
     def _get_bounds_from_ds(ds):
@@ -104,7 +122,10 @@ class FilterNDVIProcessor(BaseImageProcessor):
 
 class CloudPathManager(BasePathManager):
     def get_sources(self, stage, agroid=None):
-        base = settings.INTERMEDIATE
+        if stage == "scl_20":
+            base = settings.INTERMEDIATE
+        else:
+            base = settings.PROCESSED_DIR
         stage_map = {
             "ndvi": f"{self.satellite}_{self.date}_a{agroid}_ndvi_10m_3857.tif",
             "scl_20": f"{self.satellite}_{self.date}_a{agroid}_scl_20m_3857.tif",
@@ -113,7 +134,10 @@ class CloudPathManager(BasePathManager):
         return [os.path.join(base, stage_map[stage])]
 
     def get_destination(self, stage, agroid=None) -> str:
-        base = settings.INTERMEDIATE
+        if stage == "scl_10":
+            base = settings.PROCESSED_DIR
+        else:
+            base = settings.INTERMEDIATE
         paths = {
             "scl_10": f"{self.satellite}_{self.date}_a{agroid}_scl_10m_3857.tif",
             "ndvi_filtered": f"{self.satellite}_{self.date}_a{agroid}_ndvi_10m_3857_filtered.tif"
