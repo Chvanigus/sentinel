@@ -1,7 +1,9 @@
 """Базовые классы команд."""
 import argparse
 import os
+import sys
 from abc import ABC, abstractmethod
+
 from core.logging import get_logger
 
 
@@ -17,24 +19,13 @@ class CommandError(Exception):
 
 class CommandParser(argparse.ArgumentParser):
     """
-    Кастомный ArgumentParser с настраиваемыми параметрами для улучшения
-    некоторых сообщений об ошибках и предотвращения вызова SystemExit.
+    Кастомный ArgumentParser с улучшенной проверкой отсутствующих аргументов.
     """
 
     def __init__(
             self, *, missing_args_message=None, called_from_command_line=None,
             **kwargs
     ):
-        """
-        Инициализация CommandParser.
-        :param missing_args_message: Сообщение об ошибке, которое будет
-                                     выведено, если не переданы обязательные
-                                     аргументы.
-        :param called_from_command_line: Флаг, указывающий, вызывается ли
-                                         парсер аргументов из командной строки.
-        :param **kwargs: Дополнительные аргументы, передаваемые в конструктор
-                         класса ArgumentParser.
-        """
         self.missing_args_message = missing_args_message
         self.called_from_command_line = called_from_command_line
         super().__init__(**kwargs)
@@ -43,29 +34,23 @@ class CommandParser(argparse.ArgumentParser):
         """
         Парсит аргументы командной строки и возвращает объект пространства
         имен, содержащий значения аргументов.
-
-        :param args: Список строк аргументов командной строки.
-                Если не указан, будет использоваться sys.argv[1:].
-        :param namespace: Пространство имен, в которое будут сохранены значения
-                          аргументов. Если не указано, будет создано новое
-                          пространство имен.
-
-        :return: Пространство имен со значениями аргументов.
-
-        :raises argparse.ArgumentTypeError: Если аргументы не могут быть
-                                            распарсены.
+        Защищаемся от args == None.
         """
-        if (self.missing_args_message and
-                not (args or any(not arg.startswith("-") for arg in args))):
-            self.error(self.missing_args_message)
+        if self.missing_args_message:
+            provided_args = args if args is not None else sys.argv[1:]
+            # provided_args может быть list/tuple;
+            # если пуст — считаем аргументы отсутствующими
+            if (not provided_args
+                    or not any(not a.startswith("-") for a in provided_args)
+            ):
+                self.error(self.missing_args_message)
+
         return super().parse_args(args, namespace)
 
     def error(self, message: str):
         """
         Выводит сообщение об ошибке и завершает выполнение программы с кодом
-        ошибки, если парсер аргументов вызывается из командной строки, или
-        вызывает CommandError.
-        :param message: Сообщение об ошибке.
+        ошибки, если парсер вызывает SystemExit, иначе бросает CommandError.
         """
         if self.called_from_command_line:
             super().error(message)
@@ -131,6 +116,7 @@ class BaseCommand(ABC):
 
         if output:
             return output
+        return None
 
     def run_from_argv(self, argv) -> None:
         """
@@ -159,9 +145,9 @@ class BaseCommand(ABC):
         """
         pass
 
-    @abstractmethod
     def run(self, **options):
         """
-        Запуск действий.
+        Стандартный запуск команды — по умолчанию вызывает handle.
+        Команды могут переопределять run при необходимости.
         """
-        pass
+        return self.handle(**options)
