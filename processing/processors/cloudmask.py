@@ -153,6 +153,9 @@ def execute_cloud_mask_image_processor(agroids: list, **kwargs) -> None:
     """
     pm = CloudPathManager(**kwargs)
 
+    if kwargs["level"] == "msil1c":
+        return
+
     rescaler = RescaleSCLProcessor(agroids=agroids, path_manager=pm, **kwargs)
     rescaler.execute()
 

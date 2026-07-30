@@ -33,42 +33,60 @@ class ZipHandler:
         """Возвращает название архива."""
         return self.basename
 
-    def unzip(self,
-              dst_path: str,
-              level: str = "L1C",
-              needed_files: Optional[list[str]] = None) -> Optional[str]:
+    def unzip(
+            self,
+            dst_path: str,
+            level: str = "L1C",
+            needed_files: Optional[list[str]] = None) -> Optional[str]:
         """
         Потоковая распаковка ZIP только нужных файлов.
         :param dst_path: директория для распаковки
         :param needed_files: список имен файлов или шаблонов для извлечения (без пути)
         :param level: уровень данных (L1C, L2A)
         """
-
         level = level.upper()
 
-        # Надёжно формируем имя .SAFE (учитываем регистр и любые расширения)
+        # Формируем имя .SAFE
         base_no_ext = os.path.splitext(self.basename)[0]
         full_dst_path = os.path.join(dst_path, base_no_ext + ".SAFE")
+
         if os.path.exists(full_dst_path):
-            self.logger.info("Архив уже распакован: %s", full_dst_path)
+            self.logger.info(
+                "Архив уже распакован: %s",
+                full_dst_path
+            )
             return full_dst_path
 
         if not os.path.exists(self.filename) or os.path.getsize(
                 self.filename) == 0:
-            self.logger.error("ZIP файл не найден или пустой: %s",
-                              self.filename)
+            self.logger.error(
+                "ZIP файл не найден или пустой: %s",
+                self.filename
+            )
             return None
 
         if not zipfile.is_zipfile(self.filename):
-            self.logger.error("Файл не является ZIP или повреждён: %s",
-                              self.filename)
+            self.logger.error(
+                "Файл не является ZIP или повреждён: %s",
+                self.filename
+            )
             return None
 
         extracted_count = 0
+
         try:
+            os.makedirs(full_dst_path, exist_ok=True)
+
+            self.logger.info(
+                "Начинаю распаковку: filename=%s | level=%s | dst=%s | safe=%s",
+                self.filename,
+                level,
+                dst_path,
+                full_dst_path,
+            )
+
             with zipfile.ZipFile(self.filename, "r") as zip_file:
                 for member in zip_file.infolist():
-
                     # Обычно JP2 находятся в пути .../IMG_DATA/...
                     if "IMG_DATA" not in member.filename:
                         continue
@@ -77,18 +95,22 @@ class ZipHandler:
                     if not name.lower().endswith(".jp2"):
                         continue
 
+                    lname = name.lower()
+                    member_lname = member.filename.lower()
+
                     # логика по уровням
                     if level == "L1C":
                         if needed_files:
                             matched = False
-                            lname = name.lower()
                             for f in needed_files:
                                 lf = f.lower()
                                 if lf == "scl":
                                     continue
-                                if f"_{lf}_" in lname or lname.endswith(
-                                        f"_{lf}.jp2") or (
-                                        f"_{lf}_" in member.filename.lower()):
+                                if (
+                                        f"_{lf}_" in lname
+                                        or lname.endswith(f"_{lf}.jp2")
+                                        or f"_{lf}_" in member_lname
+                                ):
                                     matched = True
                                     break
                             if not matched:
@@ -97,30 +119,43 @@ class ZipHandler:
                     elif level == "L2A":
                         if needed_files:
                             matched = False
-                            lname = name.lower()
                             for f in needed_files:
                                 lf = f.lower()
-                                if f"_{lf}_" in lname or lname.endswith(
-                                        f"_{lf}.jp2") or (
-                                        f"_{lf}_" in member.filename.lower()):
+                                if (
+                                        f"_{lf}_" in lname
+                                        or lname.endswith(f"_{lf}.jp2")
+                                        or f"_{lf}_" in member_lname
+                                ):
                                     matched = True
                                     break
                             if not matched:
                                 continue
 
-                        if "_scl_" in name.lower():
-                            if "R20m" not in member.filename:
+                        if "_scl_" in lname:
+                            if "r20m" not in member_lname:
                                 continue
                         else:
-                            if "R10m" not in member.filename:
+                            if "r10m" not in member_lname:
                                 continue
 
                     else:
-                        self.logger.error("Неизвестный уровень данных: %s",
-                                          level)
+                        self.logger.error(
+                            "Неизвестный уровень данных: %s",
+                            level
+                        )
                         return None
 
-                    target_path = os.path.join(dst_path, member.filename)
+                    # ВАЖНО: пишем внутрь full_dst_path, а не в dst_path
+                    parts = member.filename.split("/", 1)
+
+                    # если внутри есть SAFE папка — убираем её
+                    if len(parts) > 1 and parts[0].endswith(".SAFE"):
+                        relative_path = parts[1]
+                    else:
+                        relative_path = member.filename
+
+                    target_path = os.path.join(full_dst_path, relative_path)
+
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
                     with zip_file.open(member) as source, open(target_path,
@@ -132,21 +167,28 @@ class ZipHandler:
 
             if extracted_count == 0:
                 self.logger.warning(
-                    "Ничего не распаковано (файлы отфильтрованы). Проверьте needed_files и шаблоны имен в ZIP: %s",
-                    self.filename)
+                    "Ничего не распаковано (файлы отфильтрованы). "
+                    "Проверьте needed_files и шаблоны имен в ZIP: %s",
+                    self.filename,
+                )
                 return None
 
             self.logger.info(
                 "Архив успешно распакован в %s (извлечено %d файлов)",
-                full_dst_path, extracted_count)
+                full_dst_path, extracted_count,
+            )
             return full_dst_path
 
         except zipfile.BadZipFile as e:
-            self.logger.error("Файл повреждён или не является ZIP: %s, %s",
-                              self.filename, e)
+            self.logger.error(
+                "Файл повреждён или не является ZIP: %s, %s",
+                self.filename, e
+            )
             return None
 
         except Exception as err:
-            self.logger.error("Не удалось распаковать архив %s: %s",
-                              self.filename, err)
+            self.logger.error(
+                "Не удалось распаковать архив %s: %s",
+                self.filename, err
+            )
             return None

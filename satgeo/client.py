@@ -1,7 +1,11 @@
 """GeoServerClient на базе geoserver-rest (geo.Geoserver.Geoserver)."""
+import os
 
 import requests
 from geoserver.catalog import Catalog
+from geoserver.catalog import FailedRequestError
+from geoserver.resource import FeatureType
+from geoserver.store import UnsavedCoverageStore
 
 from core import settings
 from core.logging import get_logger
@@ -18,30 +22,87 @@ class GeoServerClient:
         self.workspace = settings.GS_WORKSPACE
         self.logger = get_logger(__class__.__name__)
 
-    def get_or_create_store(
+    def create_coveragestore(
             self,
             store_name: str,
             container_path: str,
+            create_layer=True,
+            layer_name=None,
+            source_name=None,
     ):
-        """Создаём или возвращаем store."""
-        store = self.cat.get_store(store_name, workspace=self.workspace)
+        """
+        Создаём coverage store в GeoServer.
+
+        Почему здесь кастомная реализация:
+        Стандартный метод Catalog.create_coveragestore() из библиотеки
+        geoserver-restconfig содержит неочевидный баг —
+        после успешного создания store он пытается вернуть связанный ресурс
+        через вызов get_resources().
+
+        Это приводит к следующему поведению:
+
+        выполняется полный обход всех store-ов в workspace
+        для каждого workspace отправляются запросы:
+        GET /datastores
+        GET /coveragestores
+        GET /wmsstores
+        затем дополнительно запрашиваются ресурсы внутри каждого store
+
+        В результате один вызов create_coveragestore генерирует десятки
+        (а иногда сотни) лишних HTTP GET-запросов.
+
+        Текущий верхнеуровневый метод можно использовать вместо стандартного
+        метода библиотеки в high-load сценариях.
+        """
+        store = self.cat.get_store(name=store_name, workspace=self.workspace)
+
         if store:
-            return store
+            self.logger.info(
+                "%s уже существует - пропуск создания...",
+                store_name
+            )
+            return
 
         self.logger.info("Создаём store: %s", store_name)
 
-        store = self.cat.create_coveragestore(
-            name=store_name,
-            workspace=self.workspace,
-            path=container_path,
-        )
-        store.type = "GeoTIFF"
-        store.url = f"file://{container_path}"
-        self.cat.save(store)
+        cs = UnsavedCoverageStore(self.cat, store_name, self.workspace)
+        cs.type = "GeoTIFF"
+        cs.url = container_path if container_path.startswith(
+            "file:") else f"file:{container_path}"
 
-        self.logger.info(f"Store %s успешно создан", store_name)
+        self.cat.save(cs)
 
-        return store
+        if create_layer:
+            if layer_name is None:
+                layer_name = \
+                    os.path.splitext(os.path.basename(container_path))[0]
+            if source_name is None:
+                source_name = \
+                    os.path.splitext(os.path.basename(container_path))[0]
+
+            data = (
+                f"<coverage>"
+                f"<name>{layer_name}</name>"
+                f"<nativeName>{source_name}</nativeName>"
+                f"</coverage>"
+            )
+            url = (
+                f"{self.cat.service_url}/workspaces/{self.workspace}"
+                f"/coveragestores/{store_name}/coverages.xml"
+            )
+            headers = {"Content-type": "application/xml"}
+
+            resp = self.cat.http_request(url, method="post", data=data,
+                                         headers=headers)
+            if resp.status_code != 201:
+                raise FailedRequestError(
+                    f"Failed to create coverage/layer {layer_name} for {store_name}: "
+                    f"{resp.status_code}, {resp.text}"
+                )
+
+        self.cat._cache.clear()
+
+        self.logger.info("Store %s успешно создан", store_name)
 
     def set_layer_style(self, layer_name: str, style_name: str) -> None:
         """Устанавливаем стиль для слоя."""

@@ -111,13 +111,10 @@ class GeoServerPublic:
         # 2. Store / Coverage
         container_path = self._to_container_path(dst)
 
-        store = self.client.get_or_create_store(
+        self.client.create_coveragestore(
             store_name=store_name,
             container_path=container_path,
         )
-
-        if store:
-            self.logger.info("Создан store для слоя %s", layer_name)
 
         # 3. Стиль
         if style and style != "tci":

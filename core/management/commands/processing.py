@@ -1,4 +1,5 @@
 """Команда по полному циклу поиска и обработки изображений."""
+from datetime import datetime
 
 from core.management.base import BaseCommand
 from processing.orchestrator import SentinelProcessingOrchestrator
@@ -12,29 +13,46 @@ class Command(BaseCommand):
             "-d", "--debug", action="store_true",
             help="Режим разработчика. Не удаляются отработанные файлы."
         )
-        parser.add_argument(
-            "--archive", action="store_true",
-            help="Читать исходники из архива вместо DOWNLOADS_DIR"
-        )
-        parser.add_argument(
-            "--archive-root", type=str,
-            help="Корневая директория архива "
-                 "(переопределяет settings.SNAPSHOTS_ARCHIVE_ROOT)"
-        )
-        parser.add_argument(
-            "--start-year", type=int, default=2010,
-            help="Год, с которого начинать обход архива (по умолчанию 2010)"
-        )
+
+        parser.add_argument("--year", type=int)
+        parser.add_argument("--month", type=int)
+
+        parser.add_argument("--start")
+        parser.add_argument("--end")
 
     def handle(self, *args, **options):
         debug = options.get("debug", False)
-        archive = options.get("archive", False)
-        archive_root = options.get("archive_root")
-        start_year = options.get("start_year", 2010)
+
+        year = options.get("year")
+        month = options.get("month")
+        start = options.get("start")
+        end = options.get("end")
+
+        start_date = None
+        end_date = None
+
+        if start:
+            start_date = datetime.strptime(start, "%Y-%m-%d")
+
+        if end:
+            end_date = datetime.strptime(end, "%Y-%m-%d")
+
+        if year and not start_date:
+            if month:
+                start_date = datetime(year, month, 1)
+
+                if month == 12:
+                    end_date = datetime(year + 1, 1, 1)
+                else:
+                    end_date = datetime(year, month + 1, 1)
+            else:
+                start_date = datetime(year, 1, 1)
+                end_date = datetime(year + 1, 1, 1)
 
         orchestrator = SentinelProcessingOrchestrator()
-        if archive:
-            orchestrator.run_from_archive(archive_root=archive_root,
-                                          start_year=start_year, debug=debug)
-        else:
-            orchestrator.run(debug=debug)
+
+        orchestrator.run(
+            debug=debug,
+            start_date=start_date,
+            end_date=end_date,
+        )

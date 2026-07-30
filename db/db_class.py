@@ -225,9 +225,12 @@ class PostgisWorker:
         :return: Булевое значение, что снимок существует или нет
         """
         query = """
-        SELECT * FROM gpgeo."maps_layer" WHERE 
-        date IN (%s) AND agroid IN (%s) AND set IN (%s)
-        """
+                SELECT *
+                FROM gpgeo."maps_layer"
+                WHERE date IN (%s)
+                  AND agroid IN (%s)
+                  AND set IN (%s) \
+                """
 
         if self.conn.extract_one(
                 query=query,
@@ -237,18 +240,31 @@ class PostgisWorker:
         else:
             return False
 
-    def check_layer_date(self, date: datetime) -> bool:
+    def get_missing_agroids(self, date: datetime) -> List[int]:
         """
-        Проверяет наличие спутникового снимка с переданной датой.
-        :param date: Дата для проверки.
-        :return: Булевое значение, что снимок существует или нет
+        Возвращает список агро, по которым НЕТ снимков за дату.
+        Порядок сохраняется: 1, 3, 4, 5, 6.
         """
-        query = """SELECT * FROM gpgeo."maps_layer" WHERE date IN (%s)"""
+        required_agroids = (1, 3, 4, 5, 6)
 
-        if self.conn.extract_one(query, (date,)):
-            return True
-        else:
-            return False
+        query = """
+                SELECT DISTINCT agroid
+                FROM gpgeo.maps_layer
+                WHERE date = %s
+                  AND agroid = ANY (%s) \
+                """
+
+        rows = self.conn.extract_all(query, (date, list(required_agroids)))
+
+        found_agroids = {row["agroid"] for row in rows} if rows else set()
+
+        return [a for a in required_agroids if a not in found_agroids]
+
+    def is_date_fully_processed(self, date: datetime) -> bool:
+        """
+        True если есть все агро.
+        """
+        return len(self.get_missing_agroids(date)) == 0
 
     def get_fieldids_from_agro(
             self, agroid: int, year: int = datetime.now().year
@@ -260,8 +276,9 @@ class PostgisWorker:
         :return: Список ID полей, которые входят в выбранное агропредприятие
         """
         query = """
-        SELECT * FROM gpgeo.__geo_get_fieldnames_for_agro_year(%s, %s)
-        """
+                SELECT *
+                FROM gpgeo.__geo_get_fieldnames_for_agro_year(%s, %s) \
+                """
         records = self.conn.extract_all(query, (agroid, year))
 
         fields = []
@@ -286,8 +303,9 @@ class PostgisWorker:
         :return: Список координат охвата геометрии выбранных полей
         """
         query = """
-        SELECT * FROM gpgeo.__geostl_get_boundpoints(%s, %s, %s, %s)
-        """
+                SELECT *
+                FROM gpgeo.__geostl_get_boundpoints(%s, %s, %s, %s) \
+                """
         lats_lons = self.conn.extract_all(
             query=query, _vars=(year, dstype, fieldid, agroid)
         )
@@ -308,7 +326,8 @@ class PostgisWorker:
         :param year: Год, по которому выбирается контур.
         :param date: Дата, за которую формируется поле.
         """
-        query = """SELECT * FROM gpgeo.__geo_get_field_shape(%s, %s)"""
+        query = """SELECT *
+                   FROM gpgeo.__geo_get_field_shape(%s, %s)"""
         geojson = self.conn.extract_all(query, (fieldid, year))
         field_path = os.path.join(
             dst_path, f"A{agroid}_{date}_FIELD{fieldname}.geojson"
@@ -374,12 +393,12 @@ class PostgisWorker:
         field_ids = [f.id for f in fields]
 
         query = """
-        SELECT 1
-        FROM gpgeo.maps_ndvi_values
-        WHERE date = %s
-          AND fieldid = ANY(%s)
-        LIMIT 1
-        """
+                SELECT 1
+                FROM gpgeo.maps_ndvi_values
+                WHERE date = %s
+                  AND fieldid = ANY (%s)
+                LIMIT 1 \
+                """
 
         result = self.conn.extract_one(
             query=query,
