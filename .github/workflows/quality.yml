@@ -3,6 +3,10 @@ name: Quality
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   checks:
@@ -30,3 +34,88 @@ jobs:
         run: >-
           python -m compileall -q manage.py cdse cli core db domain
           processing satgeo scripts tests
+
+      - name: Validate operational scripts
+        run: |
+          bash -n deploy/deploy.sh
+          make -n search download process deploy
+
+  deploy:
+    name: Deploy production
+    needs: checks
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      vars.AUTO_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: sentinel-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "${DEPLOY_SSH_KEY}"
+          test -n "${DEPLOY_KNOWN_HOSTS}"
+          install -d -m 700 "${HOME}/.ssh"
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/id_ed25519"
+          chmod 644 "${HOME}/.ssh/known_hosts"
+
+      - name: Deploy checked commit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          test -n "${DEPLOY_HOST}"
+          test -n "${DEPLOY_PORT}"
+          test -n "${DEPLOY_USER}"
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=20 \
+            -o IdentitiesOnly=yes \
+            -p "${DEPLOY_PORT}" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "bash -s -- '${TARGET_SHA}'" <<'REMOTE'
+          set -Eeuo pipefail
+
+          target_sha="$1"
+          project_root="/home/sysop/sentinel"
+
+          if systemctl is-active --quiet sentinel-nightly.service; then
+              echo "Nightly pipeline is running; deploy refused" >&2
+              exit 1
+          fi
+
+          cd "${project_root}"
+
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+              echo "Tracked files contain local changes; deploy refused" >&2
+              exit 1
+          fi
+
+          git fetch --prune origin main
+          git switch main
+
+          if ! git merge-base --is-ancestor "${target_sha}" origin/main; then
+              echo "Checked commit is not reachable from origin/main" >&2
+              exit 1
+          fi
+
+          if git merge-base --is-ancestor "${target_sha}" HEAD; then
+              echo "Commit ${target_sha} is already deployed or superseded"
+          elif git merge-base --is-ancestor HEAD "${target_sha}"; then
+              git merge --ff-only "${target_sha}"
+          else
+              echo "Server main has diverged; deploy refused" >&2
+              exit 1
+          fi
+
+          ./deploy/deploy.sh
+          REMOTE

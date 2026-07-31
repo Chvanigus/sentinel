@@ -81,6 +81,17 @@ python manage.py processing --year 2026 --month 7
 календарных дня, включая текущую или переданную через `--end` дату. Повторный
 поиск безопасен: уже находящиеся в архиве ZIP-файлы не скачиваются заново.
 
+Для ежедневной работы предусмотрен `Makefile`:
+
+```bash
+make help
+make search DAYS=3
+make download START=2026-07-01 END=2026-07-31
+make process
+make process YEAR=2026 MONTH=7
+make process DEBUG=1
+```
+
 Пути архива и рабочих директорий задаются через `.env`. Во всех компонентах
 используется единый `ARCHIVE_ROOT`; регистр имени каталога важен на Linux.
 
@@ -89,6 +100,10 @@ python manage.py processing --year 2026 --month 7
 Готовые unit-файлы для последовательного ночного запуска загрузки и обработки
 находятся в [`deploy/systemd`](deploy/systemd/README.md). Таймер срабатывает
 ежедневно в 03:00 и требует запущенный `xray.service`.
+
+Автоматическое развёртывание проверенного `main` через GitHub Actions описано в
+[`deploy/README.md`](deploy/README.md). До добавления SSH-secrets и переменной
+`AUTO_DEPLOY_ENABLED=true` deploy-job не выполняется.
 
 ## Проверки
 

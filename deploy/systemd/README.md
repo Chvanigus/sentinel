@@ -25,6 +25,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now sentinel-nightly.timer
 ```
 
+Те же действия можно выполнить из корня проекта:
+
+```bash
+make install-systemd
+```
+
 ## Проверка
 
 Сначала рекомендуется вручную запустить тот же сервис:
@@ -49,4 +55,3 @@ sudo journalctl -fu sentinel-nightly.service
 
 После успешного завершения `oneshot`-сервис переходит в состояние `inactive
 (dead)` с кодом `0`; для такого типа сервиса это нормально.
-
