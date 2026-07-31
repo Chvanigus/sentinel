@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 
-class ProductLevel(str, Enum):
+class ProductLevel(StrEnum):
     """Поддерживаемые уровни продуктов Sentinel-2."""
 
     L1C = "msil1c"

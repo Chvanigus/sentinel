@@ -363,117 +363,20 @@ def test_core_does_not_depend_on_application_packages():
     assert offenders == []
 
 
-def test_python39_union_annotations_are_deferred():
-    """PEP 604-аннотации не вычисляются при импорте модулей в Python 3.9."""
-    root = Path(__file__).parents[1]
-    offenders = []
-
-    for package in (
-            "cdse",
-            "cli",
-            "core",
-            "db",
-            "domain",
-            "processing",
-            "satgeo",
-    ):
-        for module in (root / package).rglob("*.py"):
-            tree = ast.parse(module.read_text(encoding="utf-8"))
-            has_future_annotations = any(
-                isinstance(node, ast.ImportFrom)
-                and node.module == "__future__"
-                and any(
-                    alias.name == "annotations"
-                    for alias in node.names
-                )
-                for node in tree.body
-            )
-            uses_union = any(
-                isinstance(part, ast.BinOp)
-                and isinstance(part.op, ast.BitOr)
-                for node in ast.walk(tree)
-                for annotation in _annotations(node)
-                for part in ast.walk(annotation)
-            )
-            if uses_union and not has_future_annotations:
-                offenders.append(module)
-
-    assert offenders == []
-
-
-def test_python39_module_type_aliases_do_not_evaluate_pep604():
-    """Module-level type aliases не вычисляют PEP 604 union в Python 3.9."""
-    root = Path(__file__).parents[1]
-    offenders = []
-
-    for package in (
-            "cdse",
-            "cli",
-            "core",
-            "db",
-            "domain",
-            "processing",
-            "satgeo",
-    ):
-        for module in (root / package).rglob("*.py"):
-            tree = ast.parse(module.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign):
-                    values = [node.value]
-                elif (
-                        isinstance(node, ast.AnnAssign)
-                        and node.value is not None
-                ):
-                    values = [node.value]
-                else:
-                    values = []
-                if any(
-                        isinstance(part, ast.BinOp)
-                        and isinstance(part.op, ast.BitOr)
-                        for value in values
-                        for part in ast.walk(value)
-                ):
-                    offenders.append(f"{module}:{node.lineno}")
-
-    assert offenders == []
-
-
-def _annotations(node: ast.AST) -> list[ast.expr]:
-    """Возвращает аннотации узла, вычисляемые при импорте модуля."""
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        result = [
-            argument.annotation
-            for argument in (
-                *node.args.posonlyargs,
-                *node.args.args,
-                *node.args.kwonlyargs,
-            )
-            if argument.annotation is not None
-        ]
-        if node.args.vararg and node.args.vararg.annotation:
-            result.append(node.args.vararg.annotation)
-        if node.args.kwarg and node.args.kwarg.annotation:
-            result.append(node.args.kwarg.annotation)
-        if node.returns:
-            result.append(node.returns)
-        return result
-    if isinstance(node, ast.AnnAssign):
-        return [node.annotation]
-    return []
-
-
-def test_dependencies_preserve_server_gdal_numpy_abi():
-    """Runtime-зависимости сохраняют совместимость с серверным GDAL ABI."""
+def test_dependencies_target_python313_and_numpy2():
+    """Runtime-зависимости закрепляют единый стек Python 3.13 и NumPy 2."""
     root = Path(__file__).parents[1]
     requirements = (root / "requirements.txt").read_text(encoding="utf-8")
     project = (root / "pyproject.toml").read_text(encoding="utf-8")
 
     for dependency in (
-            "numpy>=1.26,<2",
-            "opencv-python-headless>=4.8,<4.12",
+            "numpy>=2.1,<3",
+            "opencv-python-headless>=4.12,<5",
+            "scipy>=1.15,<2",
     ):
         assert dependency in requirements
         assert f'"{dependency}"' in project
+    assert 'requires-python = ">=3.13"' in project
 
 
 def test_python_sources_have_russian_docstrings():

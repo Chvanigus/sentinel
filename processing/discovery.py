@@ -8,7 +8,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from .domain import ArchivePair
 
@@ -31,7 +30,7 @@ class ArchiveName:
     tile: str
 
 
-ZipNameParser = Callable[[str], Optional[ArchiveName]]
+ZipNameParser = Callable[[str], ArchiveName | None]
 
 
 def parse_archive_name(path: str) -> ArchiveName | None:

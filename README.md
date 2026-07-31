@@ -29,7 +29,7 @@ PostGIS, собирает статистику и публикует слои ч
 
 ## Технологии
 
-- Python 3.9+
+- Python 3.13
 - GDAL
 - PostgreSQL + PostGIS
 - GeoServer (локально)
@@ -51,13 +51,16 @@ PostGIS, собирает статистику и публикует слои ч
 ## Локальная установка
 
 GDAL должен быть установлен в системе вместе с Python bindings той же версии.
+Требуется GDAL 3.9+ с bindings, собранными против NumPy 2.
 После этого:
 
 ```bash
 python -m venv .venv
 # Windows
+.venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 # Linux
+.venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
@@ -85,8 +88,7 @@ python -m ruff check .
 python -m compileall -q manage.py cdse cli core db domain processing satgeo scripts
 ```
 
-Те же проверки автоматически выполняются в GitHub Actions для Python 3.9 и
-3.12.
+Те же проверки автоматически выполняются в GitHub Actions для Python 3.13.
 
 В окружении с установленным GDAL ключевую цепочку облачной маски можно
 проверить без БД и внешних сервисов:
