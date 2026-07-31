@@ -1,10 +1,21 @@
 """Менеджер запуска команд."""
 import os
+import pkgutil
 import sys
 from importlib import import_module
 
+from cli import commands
 from core.logging import get_logger
 from core.management.base import BaseCommand
+
+
+def get_command_names() -> list[str]:
+    """Возвращает доступные команды в стабильном порядке."""
+    return sorted(
+        module.name
+        for module in pkgutil.iter_modules(commands.__path__)
+        if not module.name.startswith("_")
+    )
 
 
 def load_command_class(name: str) -> BaseCommand:
@@ -13,7 +24,7 @@ def load_command_class(name: str) -> BaseCommand:
     :param name: Название команды
     :return: Класс выбранной команды.
     """
-    module = import_module(f"core.management.commands.{name}")
+    module = import_module(f"cli.commands.{name}")
     return module.Command()
 
 
@@ -27,33 +38,43 @@ class ManagementUtility:
 
     def fetch_command(self, subcommand) -> BaseCommand:
         """Возвращает класс команды."""
-        # try:
+        command_names = get_command_names()
+        if subcommand not in command_names:
+            available = ", ".join(command_names)
+            raise ValueError(
+                f"Неизвестная команда '{subcommand}'. "
+                f"Доступные команды: {available}"
+            )
         return load_command_class(subcommand)
-        # except ModuleNotFoundError:
-        #     self.logger.info(
-        #         f"Введите '{self.prog_name} help' "
-        #         f"для просмотра инструкций по использованию"
-        #     )
 
-    def execute(self):
+    def execute(self) -> int:
         """Выполняет команду."""
         try:
             subcommand = self.argv[1]
         except IndexError:
             subcommand = "help"
 
-        if subcommand == 'help':
-            # @TODO доделать инструкцию к manage.py
-            self.logger.info("Инструкция ещё пишется.")
+        if subcommand == "help":
+            self.logger.info(
+                "Использование: %s <команда> [параметры]",
+                self.prog_name,
+            )
+            self.logger.info(
+                "Доступные команды: %s", ", ".join(get_command_names())
+            )
+            return 0
 
-        else:
-            module = self.fetch_command(subcommand)
+        try:
+            command = self.fetch_command(subcommand)
+        except ValueError as exc:
+            self.logger.error("%s", exc)
+            return 2
 
-            if module is not None:
-                module.run_from_argv(self.argv)
+        command.run_from_argv(self.argv)
+        return 0
 
 
-def execute_from_command_line(argv=None):
+def execute_from_command_line(argv=None) -> int:
     """Запуск ManagementUtility."""
     utility = ManagementUtility(argv)
-    utility.execute()
+    return utility.execute()

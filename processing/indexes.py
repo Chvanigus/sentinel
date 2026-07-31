@@ -1,77 +1,81 @@
 """Класс для работы с индексами спутниковых снимков."""
-from typing import Optional, Callable
+from __future__ import annotations
 
 import numpy as np
 
-from processing.dataset import GDALDatasetProcessing, GDALDatasetContextManager
+from processing.calculations import normalized_difference
+from processing.dataset import RasterArrayWriter, open_raster
 
-np.seterr(divide='ignore', invalid='ignore')
 
-
-class IndexProcessing:
+class SpectralIndexProcessor:
     """Класс для создания пространственных индексов."""
 
     def __init__(
             self,
-            output_file: str,
-            b03_file: Optional[str] = None,
-            b04_file: Optional[str] = None,
-            b08_file: Optional[str] = None,
+            *,
+            b03_file: str | None = None,
+            b04_file: str | None = None,
+            b08_file: str,
+            nodata: float = -9999.0,
     ):
         self._b03_file = b03_file
         self._b04_file = b04_file
         self._b08_file = b08_file
-        self._output_file = output_file
+        self._nodata = nodata
 
     @staticmethod
     def _load_band(path: str) -> np.ndarray:
         """Возвращает спектральное изображение как массив NumPy."""
-        with GDALDatasetContextManager(path) as ds:
-            return ds.ReadAsArray().astype(np.float64)
+        with open_raster(path) as ds:
+            return ds.ReadAsArray().astype(np.float32)
 
-    @staticmethod
-    def _calculate_index(
-            band_a: np.ndarray, band_b: np.ndarray,
-            formula: Callable[[np.ndarray, np.ndarray], np.ndarray]
-    ) -> np.ndarray:
-        """Общий метод вычисления индекса."""
-        result = formula(band_a, band_b)
-        return np.clip(result, -1.0, 1.0)
-
-    def _create_index_image(
+    def _write_index(
             self,
-            band_a_file: str,
-            band_b_file: str,
-            formula: Callable[[np.ndarray, np.ndarray], np.ndarray]
+            *,
+            output_file: str,
+            reference_file: str,
+            primary: np.ndarray,
+            secondary: np.ndarray,
     ) -> None:
-        """Создаёт изображение из двух спектральных изображений."""
-        band_a = self._load_band(band_a_file)
-        band_b = self._load_band(band_b_file)
-
-        index_array = self._calculate_index(band_a, band_b, formula)
-
-        GDALDatasetProcessing(
-            dst_path=self._output_file,
-            src_path=band_a_file,
-            np_array=index_array
-        ).create_file_from_array()
-
-    def create_ndvi_image(self) -> None:
-        """Создание NDVI (Normalized Difference Vegetation Index)."""
-        if not self._b04_file or not self._b08_file:
-            raise ValueError("Не заданы пути к B04 и B08 для NDVI.")
-        self._create_index_image(
-            self._b08_file,
-            self._b04_file,
-            lambda nir, red: (nir - red) / (nir + red)
+        """Рассчитывает и записывает один спектральный индекс."""
+        index_array = normalized_difference(
+            primary,
+            secondary,
+            nodata=self._nodata,
         )
+        RasterArrayWriter(
+            destination=output_file,
+            source=reference_file,
+            nodata=self._nodata,
+        ).write(index_array)
 
-    def create_ndwi_image(self) -> None:
-        """Создание NDWI (Normalized Difference Water Index)."""
-        if not self._b03_file or not self._b08_file:
-            raise ValueError("Не заданы пути к B03 и B08 для NDWI.")
-        self._create_index_image(
-            self._b03_file,
-            self._b08_file,
-            lambda green, nir: (green - nir) / (green + nir)
-        )
+    def create(self, outputs: dict[str, str]) -> None:
+        """Создаёт выбранные NDVI/NDWI, читая общий канал B08 один раз."""
+        unknown = set(outputs) - {"ndvi", "ndwi"}
+        if unknown:
+            raise ValueError(
+                "Неподдерживаемые спектральные индексы: "
+                + ", ".join(sorted(unknown))
+            )
+        if not outputs:
+            return
+
+        b08 = self._load_band(self._b08_file)
+        if "ndvi" in outputs:
+            if self._b04_file is None:
+                raise ValueError("Не задан канал B04 для NDVI")
+            self._write_index(
+                output_file=outputs["ndvi"],
+                reference_file=self._b08_file,
+                primary=b08,
+                secondary=self._load_band(self._b04_file),
+            )
+        if "ndwi" in outputs:
+            if self._b03_file is None:
+                raise ValueError("Не задан канал B03 для NDWI")
+            self._write_index(
+                output_file=outputs["ndwi"],
+                reference_file=self._b03_file,
+                primary=self._load_band(self._b03_file),
+                secondary=b08,
+            )

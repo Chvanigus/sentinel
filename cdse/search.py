@@ -1,25 +1,29 @@
 """Класс для работы с поиском данных в CDSE."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from core.logging import get_logger
-from core.settings import SEARCH_CHUNK_DAYS
+
 from .client import CdseODataClient
 from .models import ProductRecord
 from .utils import (
     extract_tile_from_item,
     normalize_tile,
-    split_date_range, )
+    split_date_range,
+)
 
 logger = get_logger("CdseSearcher")
 
 
 def _quote(value: str) -> str:
+    """Экранирует строковое значение для OData-фильтра."""
     return value.replace("'", "''")
 
 
-def _extract_cloud_cover(item: dict[str, Any]) -> Optional[float]:
+def _extract_cloud_cover(item: dict[str, Any]) -> float | None:
+    """Извлекает процент облачности из типизированных атрибутов продукта."""
     attrs = item.get("Attributes") or []
     for attr in attrs:
         if not isinstance(attr, dict):
@@ -27,13 +31,14 @@ def _extract_cloud_cover(item: dict[str, Any]) -> Optional[float]:
         if attr.get("Name") == "cloudCover":
             try:
                 return float(attr.get("Value"))
-            except Exception as exc:
+            except (TypeError, ValueError) as exc:
                 logger.warning("failed to parse cloudCover: %s", exc)
                 return None
     return None
 
 
-def _extract_size_bytes(item: dict[str, Any]) -> Optional[int]:
+def _extract_size_bytes(item: dict[str, Any]) -> int | None:
+    """Извлекает размер продукта из одного из поддерживаемых полей ответа."""
     value = item.get("ContentLength")
     if value is None:
         value = item.get("contentLength")
@@ -43,7 +48,7 @@ def _extract_size_bytes(item: dict[str, Any]) -> Optional[int]:
         return None
     try:
         return int(value)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         logger.warning("failed parsing ContentLength: %s", exc)
         return None
 
@@ -53,17 +58,22 @@ class ODataProductSearcher:
     Поиск продуктов через CDSE OData.
     """
 
-    def __init__(self, client: CdseODataClient):
+    def __init__(
+            self,
+            client: CdseODataClient,
+            chunk_days: int = 1,
+    ):
         self.client = client
+        self.chunk_days = chunk_days
 
     def _build_filter(
             self,
             collection: str,
             start_iso: str,
             end_iso: str,
-            tiles: Optional[list[str]] = None,
-            cloud_lt: Optional[float] = None,
-            product_type: Optional[str] = None,
+            tiles: list[str] | None = None,
+            cloud_lt: float | None = None,
+            product_type: str | None = None,
     ) -> str:
         """Построение фильтра для поиска нужных продуктов."""
         filters: list[str] = [
@@ -80,8 +90,11 @@ class ODataProductSearcher:
             )
 
         if tiles:
-            normalized_tiles = [normalize_tile(t) for t in tiles if
-                                normalize_tile(t)]
+            normalized_tiles = [
+                normalized
+                for tile in tiles
+                if (normalized := normalize_tile(tile))
+            ]
             tile_filter = " or ".join(
                 "Attributes/OData.CSC.StringAttribute/any("
                 "att:att/Name eq 'tileId' and "
@@ -106,13 +119,13 @@ class ODataProductSearcher:
             start: str,
             end: str,
             do_download: bool,
-            tiles: Optional[list[str]] = None,
-            cloud_lt: Optional[float] = None,
-            product_type: Optional[str] = None,
-            archive_index: Optional[set[str]] = None,
+            tiles: list[str] | None = None,
+            cloud_lt: float | None = None,
+            product_type: str | None = None,
+            archive_index: set[str] | None = None,
             top: int = 500,
-            orderby: Optional[str] = None,
-    ):
+            orderby: str | None = None,
+    ) -> Iterator[ProductRecord]:
         """
         Генератор ProductRecord с дневным батчингом.
         """
@@ -126,9 +139,13 @@ class ODataProductSearcher:
         else:
             logger.info("Поиск без скачивания")
 
-        day_ranges = split_date_range(start, end, chunk_days=SEARCH_CHUNK_DAYS)
+        day_ranges = split_date_range(
+            start,
+            end,
+            chunk_days=self.chunk_days,
+        )
 
-        for idx, (start_iso, end_iso) in enumerate(day_ranges, start=1):
+        for start_iso, end_iso in day_ranges:
             filter_expr = self._build_filter(
                 collection=collection,
                 start_iso=start_iso,
@@ -138,9 +155,6 @@ class ODataProductSearcher:
                 product_type=product_type,
             )
 
-            page_count = 0
-            item_count = 0
-
             for item in self.client.iter_products(
                     filter_expr=filter_expr,
                     top=top,
@@ -148,13 +162,10 @@ class ODataProductSearcher:
                     expand=["Attributes"],
                     authorized=True,
             ):
-                page_count += 1
-                item_count += 1
-
                 if not isinstance(item, dict):
                     continue
 
-                name = str(item.get("Name") or "").strip().replace(".SAFE", "")
+                name = str(item.get("Name") or "").strip()
                 product_id = str(item.get("Id") or "").strip()
                 if not product_id or not name:
                     continue
@@ -174,7 +185,10 @@ class ODataProductSearcher:
                 size_bytes = _extract_size_bytes(item)
                 cloud_cover = _extract_cloud_cover(item)
 
-                zip_name = f"{name}.zip"
+                archive_stem = (
+                    name[:-5] if name.upper().endswith(".SAFE") else name
+                )
+                zip_name = f"{archive_stem}.zip"
                 exists = archive_index is not None and zip_name in archive_index
 
                 yield ProductRecord(
@@ -194,12 +208,12 @@ class ODataProductSearcher:
             start: str,
             end: str,
             do_download: bool,
-            tiles: Optional[list[str]] = None,
-            cloud_lt: Optional[float] = None,
-            product_type: Optional[str] = None,
-            archive_index: Optional[set[str]] = None,
+            tiles: list[str] | None = None,
+            cloud_lt: float | None = None,
+            product_type: str | None = None,
+            archive_index: set[str] | None = None,
             top: int = 500,
-            orderby: Optional[str] = None,
+            orderby: str | None = None,
     ) -> list[ProductRecord]:
         """
         Возвращает список найденных продуктов.

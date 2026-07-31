@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -12,8 +12,8 @@ class ProductRecord:
     name: str
     tile: str
     date: str
-    cloud_cover: Optional[float]
-    size_bytes: Optional[int]
+    cloud_cover: float | None
+    size_bytes: int | None
     exists: bool = False
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 

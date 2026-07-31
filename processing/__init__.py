@@ -1,9 +1,6 @@
-"""Модуль для работы с файлами изображений."""
+"""Обработка спутниковых изображений.
 
-from .coord import CoordProcessing
-from .processors import (
-    execute_ndvi_statistics_image_processor,
-    execute_cloud_mask_image_processor,
-    execute_combine_image_processor,
-    execute_sentinel_image_processor,
-)
+Подмодули не импортируются здесь намеренно: большинство из них требует
+системный GDAL, а чистые вычислительные модули должны оставаться доступными
+без загрузки тяжёлых инфраструктурных зависимостей.
+"""

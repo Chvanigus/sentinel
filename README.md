@@ -1,12 +1,16 @@
-# Sentinel — автоматизация обработки снимков Sentinel-2
+# Sentinel — обработка снимков Sentinel-2
 
-Кратко: проект автоматизирует обработку спутниковых снимков (Sentinel-2) — распаковка, извлечение каналов, построение индексов (NDVI, SCL, NDWI и т.д.), вырезка по контурам полей, статистика по участкам, публикация в GeoServer и сохранение в хранилище. На момент написания проект покрывает ≈90% процесса (скачивание отдельных архивов остаётся ручным).
+Проект автоматизирует загрузку и обработку спутниковых снимков Sentinel-2:
+поиск в Copernicus Data Space Ecosystem, распаковку, расчёт индексов,
+вырезку по контурам полей, расчёт статистики и публикацию в GeoServer.
 
 ---
 
 ## Описание
 
-Проект принимает `.SAFE` архивы, распаковывает, извлекает TCI и спектральные каналы, рассчитывает спектральные индексы, вырезает участки по геометриям из БД, собирает статистику и публикует тайлы через GeoServer.
+Проект принимает ZIP-архивы продуктов `.SAFE`, извлекает TCI и спектральные
+каналы, рассчитывает спектральные индексы, вырезает участки по геометриям из
+PostGIS, собирает статистику и публикует слои через GeoServer.
 
 Ключевая цель — иметь «почти реальный» поток данных для агрономического мониторинга хозяйств.
 
@@ -25,9 +29,68 @@
 
 ## Технологии
 
-- Python 3.9
-- GDAL / Rasterio (через GDAL)
+- Python 3.9+
+- GDAL
 - PostgreSQL + PostGIS
 - GeoServer (локально)
-- Redis (опционально для таск-координации)
-- Библиотеки в `requirements.txt` (пример в репозитории)
+- Copernicus Data Space Ecosystem OData API
+
+## Структура
+
+- `domain/` — предметные сущности без зависимости от инфраструктуры.
+- `cdse/` — авторизация, поиск, загрузка и CDSE application service.
+- `processing/` — discovery архивов, SAFE extraction и растровый pipeline.
+- `db/` — SQL gateway и repositories PostGIS.
+- `satgeo/` — планирование, COG-оптимизация и публикация в GeoServer.
+- `cli/` — консольные адаптеры сценариев проекта.
+- `core/` — механизм команд, настройки, логирование и filesystem primitives.
+
+Подробные границы пакетов и направление зависимостей описаны в
+[`docs/architecture.md`](docs/architecture.md).
+
+## Локальная установка
+
+GDAL должен быть установлен в системе вместе с Python bindings той же версии.
+После этого:
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+# Linux
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+Скопируйте `.env.example` в `.env` и заполните параметры подключений. Секреты
+не должны попадать в Git.
+
+## Команды
+
+```bash
+python manage.py help
+python manage.py download --start 2026-07-01 --end 2026-07-31
+python manage.py download --start 2026-07-01 --end 2026-07-31 --download
+python manage.py processing --year 2026 --month 7
+```
+
+Пути архива и рабочих директорий задаются через `.env`. Во всех компонентах
+используется единый `ARCHIVE_ROOT`; регистр имени каталога важен на Linux.
+
+## Проверки
+
+```bash
+python -m pytest
+python -m pytest --cov --cov-branch --cov-report=term-missing
+python -m ruff check .
+python -m compileall -q manage.py cdse cli core db domain processing satgeo scripts
+```
+
+Те же проверки автоматически выполняются в GitHub Actions для Python 3.9 и
+3.12.
+
+В окружении с установленным GDAL ключевую цепочку облачной маски можно
+проверить без БД и внешних сервисов:
+
+```bash
+python scripts/gdal_smoke.py
+```

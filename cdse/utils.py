@@ -6,9 +6,6 @@ import re
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
-
-import requests
 
 from core.logging import get_logger
 
@@ -17,14 +14,14 @@ logger = get_logger("CdseUtils")
 _TILE_RE = re.compile(r"_T(\d{2}[A-Z]{3})_")
 
 
-def build_archive_index(base_path: str = "/mnt/map/Snapshots") -> set[str]:
+def build_archive_index(base_path: str | Path) -> set[str]:
     """Возвращает список существующих архивов в base_path."""
     existing: set[str] = set()
 
     if not os.path.exists(base_path):
         return existing
 
-    for root, _, files in os.walk(base_path):
+    for _root, _, files in os.walk(base_path):
         for f in files:
             if f.endswith(".zip"):
                 existing.add(f)
@@ -39,7 +36,7 @@ def ensure_dir(path: str | Path) -> Path:
     return p
 
 
-def human_size(size_bytes: Optional[int]) -> str:
+def human_size(size_bytes: int | None) -> str:
     """Человекочитаемый размер."""
     if not size_bytes:
         return "-"
@@ -120,8 +117,13 @@ def split_date_range(
     """
     Делит диапазон на куски по N дней.
     """
+    if chunk_days < 1:
+        raise ValueError("chunk_days должен быть положительным числом")
+
     start_d = date.fromisoformat(start[:10])
     end_d = date.fromisoformat(end[:10])
+    if start_d > end_d:
+        raise ValueError("Дата начала не может быть позже даты окончания")
 
     ranges: list[tuple[str, str]] = []
     cur = start_d
@@ -137,19 +139,6 @@ def split_date_range(
         cur = nxt
 
     return ranges
-
-
-def build_requests_session(proxy_url: str | None = None) -> requests.Session:
-    """
-    Создаёт requests.Session с прокси, если он задан.
-    """
-    session = requests.Session()
-    if proxy_url:
-        session.proxies.update({
-            "http": proxy_url,
-            "https": proxy_url,
-        })
-    return session
 
 
 def normalize_product_name(name: str) -> str:

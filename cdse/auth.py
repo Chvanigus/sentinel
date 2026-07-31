@@ -4,14 +4,12 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import requests
 
 from core.logging import get_logger
-from core.settings import TOKEN_URL
+
 from .exceptions import CdseAuthError
-from .proxy import ProxySession
 
 logger = get_logger("CdseAuth")
 
@@ -22,7 +20,7 @@ class CdseCredentials:
     username: str
     password: str
     client_id: str = "cdse-public"
-    totp: Optional[str] = None
+    totp: str | None = None
 
 
 class CdseTokenProvider:
@@ -33,16 +31,16 @@ class CdseTokenProvider:
     def __init__(
         self,
         credentials: CdseCredentials,
-        session: Optional[requests.Session] = None,
-        token_url: str = TOKEN_URL,
+        session: requests.Session,
+        token_url: str,
         refresh_margin_sec: int = 60,
     ) -> None:
         self.credentials = credentials
-        self.session = session or ProxySession()
+        self.session = session
         self.token_url = token_url
         self.refresh_margin_sec = refresh_margin_sec
         self._lock = threading.Lock()
-        self._access_token: Optional[str] = None
+        self._access_token: str | None = None
         self._expires_at: float = 0.0
 
     def get_token(self, force_refresh: bool = False) -> str:
@@ -78,7 +76,11 @@ class CdseTokenProvider:
 
             token = payload.get("access_token")
             if not token:
-                raise CdseAuthError(f"CDSE token endpoint не вернул access_token: {payload}")
+                fields = ", ".join(sorted(map(str, payload)))
+                raise CdseAuthError(
+                    "CDSE token endpoint не вернул access_token "
+                    f"(поля ответа: {fields or 'нет'})"
+                )
 
             expires_in = int(payload.get("expires_in", 900))
             self._access_token = token

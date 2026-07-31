@@ -1,2 +1,1 @@
-"""Модуль для работы с Geoserver."""
-from .public import execute_publisher
+"""Модуль публикации обработанных снимков."""

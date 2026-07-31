@@ -1,4 +1,5 @@
 .idea
+.venv/
 *.env
 .env
 downloads/
@@ -10,3 +11,10 @@ combine/
 works_files/styles_qgis/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/

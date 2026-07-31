@@ -1,53 +1,62 @@
 """Класс для нарезания спутниковых снимков по агропредприятиями."""
-import os
-from typing import List, Optional
+from __future__ import annotations
 
-import psycopg2
-from glob2 import glob
+import os
+
 from osgeo import gdal, osr
 
-from core import settings, const
-from core.utils import get_date_obj
-from db.connect_data import DSL
-from db.db_class import get_postgis_worker
-from processing import CoordProcessing
-from processing.dataset import GDALDatasetContextManager
-from processing.processors.base import BaseImageProcessor, BasePathManager
+from processing.dataset import open_raster
+from processing.domain import ProductLevel
+from processing.geometry import intersect_raster_bounds
+from processing.ports import FieldDataProvider
+from processing.processors.base import BaseImageProcessor
 
 
-class SentinelImageProcessor(BaseImageProcessor):
-    def __init__(self,
-                 tile: str,
-                 date: str,
-                 agroids: List[int],
-                 satellite: str,
-                 path_manager,
-                 level: str = None):
-        super().__init__(tile, date, satellite, path_manager, level)
-        self.agroids = agroids
-        self.date_obj = get_date_obj(self.date)
+class AgroCropProcessor(BaseImageProcessor):
+    """Вырезает продукты сцены по границам связанных хозяйств."""
 
-    def _process_files(self):
+    def __init__(
+            self,
+            scene,
+            paths,
+            field_data: FieldDataProvider,
+            options,
+    ):
+        super().__init__(scene, paths)
+        self.field_data = field_data
+        self.options = options
+        self._agro_bounds_cache: dict[
+            int,
+            tuple[float, float, float, float],
+        ] = {}
+
+    def run(self) -> None:
+        """Обрабатывает все допустимые продукты каждого хозяйства сцены."""
         warp_keys = ["tci", "ndvi", "ndwi"]
-        if not self.level == "msil1c":
+        if self.scene.level is ProductLevel.L2A:
             warp_keys.append("scl")
 
-        for agroid in self.agroids:
+        for agroid in self.scene.agroids:
             for stage in warp_keys:
                 self.logger.info(
                     "%s_a%s_%s - обработка %s",
-                    stage, agroid, self.date, self.level
+                    stage,
+                    agroid,
+                    self.scene.date_label,
+                    self.scene.level.value,
                 )
                 self._process_stage(stage, agroid)
 
     def _process_stage(self, stage: str, agroid: int):
-        sources = self.pm.get_sources(stage=stage, agroid=agroid)
+        """Находит исходник продукта и запускает его пространственную вырезку."""
+        sources = self.paths.sources(stage)
         if not sources:
-            self.logger.warning("%s_a%s - исходники не найдены", stage, agroid)
-            return
+            raise FileNotFoundError(
+                f"{stage}_a{agroid}: исходники не найдены"
+            )
 
         src = sources[0]
-        dst = self.pm.get_destination(stage=stage, agroid=agroid)
+        dst = self.paths.destination(stage, agroid)
 
         if os.path.exists(dst):
             self.logger.info("%s уже есть — пропуск", dst)
@@ -55,24 +64,30 @@ class SentinelImageProcessor(BaseImageProcessor):
 
         self._warp(src, dst, agroid)
 
-    def _get_bounds(self, agroid: int, src_file: str) -> Optional[List[float]]:
+    def _get_bounds(
+            self,
+            agroid: int,
+            src_file: str,
+    ) -> tuple[float, float, float, float] | None:
         """
         Берём границы из PostGIS и приводим к координатам снимка.
         """
-        with psycopg2.connect(**DSL) as conn:
-            pw = get_postgis_worker(conn)
-            raw = pw.get_bounds_lats_lons(
-                year=self.date_obj.year,
+        if agroid not in self._agro_bounds_cache:
+            self._agro_bounds_cache[agroid] = self.field_data.bounds(
+                year=self.scene.acquired_on.year,
                 agroid=agroid,
-                dstype=settings.DESTSRID
+                srid=self.options.destination_srid,
             )
+        raw = self._agro_bounds_cache[agroid]
 
-        fixed = CoordProcessing(
-            bounds=raw, src_path=src_file
-        ).find_band_bounds()
+        fixed = intersect_raster_bounds(
+            raw,
+            src_file,
+            self.options.destination_srid,
+        )
 
         if fixed[0] > fixed[2] or fixed[1] > fixed[3]:
-            self.logger.warning(f"Агро %s: зона вне кадра → пропуск", agroid)
+            self.logger.warning("Агро %s: зона вне кадра → пропуск", agroid)
             return None
         return fixed
 
@@ -82,77 +97,26 @@ class SentinelImageProcessor(BaseImageProcessor):
         if not bounds:
             return
 
-        with GDALDatasetContextManager(src) as ds:
+        with open_raster(src) as ds:
             src_srs = osr.SpatialReference(wkt=ds.GetProjection())
             dst_srs = osr.SpatialReference()
-            dst_srs.ImportFromEPSG(settings.DESTSRID)
+            dst_srs.ImportFromEPSG(self.options.destination_srid)
             res = ds.GetGeoTransform()[1]
 
-            gdal.Warp(
-                dst, ds, format=const.FORMAT_GEOTIFF,
+            result = gdal.Warp(
+                dst, ds, format="GTiff",
                 outputBounds=bounds, outputBoundsSRS=dst_srs,
                 srcSRS=src_srs, dstSRS=dst_srs,
                 xRes=res, yRes=res, resampleAlg=gdal.GRIORA_Lanczos,
-                srcNodata=settings.NODATA, dstNodata=settings.NODATA
+                srcNodata=self.options.nodata,
+                dstNodata=self.options.nodata,
+                multithread=True,
+                warpOptions=["NUM_THREADS=ALL_CPUS"],
             )
-        self.logger.info(f"Нарезка для агро {agroid} готова: {dst}")
-
-
-class SentinelPathManager(BasePathManager):
-    def get_sources(self, stage, agroid=None) -> List[str]:
-        """
-        Ищем исходные TIF-файлы по pattern для tci, ndvi и т.п.
-        """
-        pattern = f"{self.satellite}_{self.tile}_{self.date}_{stage}_3857.tif"
-
-        base = settings.INTERMEDIATE
-        path = os.path.join(base, pattern)
-
-        files = [p for p in glob(path)]
-        return sorted(files)
-
-    def get_destination(self, stage, agroid=None) -> str:
-        """
-        Формируем путь назначения:
-        {satellite}_{date}_a{agroid}_{stage}_{size}m_3857.tif
-        """
-        stage_cfg = {
-            "tci": 10,
-            "ndvi": 10,
-            "ndwi": 10,
-        }
-        if self.level == "msil2a":
-            stage_cfg["scl"] = 20
-
-        size = stage_cfg.get(stage, 10)
-
-        if agroid == 1 or size == 20:
-            base = settings.INTERMEDIATE
-        else:
-            base = settings.PROCESSED_DIR
-
-
-        name = (
-            f"{self.satellite.lower()}_"
-            f"{self.date}_a{agroid}_"
-            f"{stage.replace('_tif', '')}_"
-            f"{size}m_3857.tif"
-        )
-
-        if agroid == 1:
-            name = name.replace(".tif", f"_{self.tile}.tif")
-
-        return os.path.join(base, name)
-
-
-def execute_sentinel_image_processor(agroids: list, **kwargs) -> None:
-    """
-    Вызов класса обработки изображений по сценам.
-    :param agroids: Список агропредприятий для обработки.
-    :param kwargs: Дополнительные параметры для обработки снимков.
-    """
-    pm = SentinelPathManager(**kwargs)
-    processor = SentinelImageProcessor(
-        agroids=agroids, **kwargs, path_manager=pm
-    )
-    processor.execute()
+            if result is None:
+                raise RuntimeError(
+                    f"Не удалось создать {dst} для агро {agroid}"
+                )
+            result.FlushCache()
+            result = None
+        self.logger.info("Нарезка для агро %s готова: %s", agroid, dst)

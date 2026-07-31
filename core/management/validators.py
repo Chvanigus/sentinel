@@ -12,5 +12,5 @@ def valid_date(s: any) -> datetime.date:
     msg = f"Недействительная дата: {s}"
     try:
         return datetime.strptime(s, "%Y-%m-%d").date()
-    except ValueError:
-        raise argparse.ArgumentTypeError(msg)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(msg) from exc

@@ -9,8 +9,9 @@ from pathlib import Path
 import requests
 
 from core.logging import get_logger
+
 from .client import CdseODataClient
-from .exceptions import CdseDownloadError
+from .exceptions import CdseDownloadError, CdseQueryError
 from .models import ProductRecord
 from .utils import ensure_dir, normalize_tile
 
@@ -40,45 +41,62 @@ class ODataProductDownloader:
                 headers = {}
                 if downloaded > 0:
                     headers["Range"] = f"bytes={downloaded}-"
-                    logger.warning(f"Resume download from {downloaded} bytes")
+                    logger.warning(
+                        "Resume download from %s bytes", downloaded
+                    )
 
                 response = self.client.download_stream(
-                    product_id,
-                    authorized=True,
-                    headers=headers,
+                    product_id, authorized=True, headers=headers
                 )
+                try:
+                    response.raise_for_status()
 
-                response.raise_for_status()
+                    # Некоторые серверы игнорируют Range и отвечают 200 полным
+                    # файлом. В таком случае нельзя дописывать его к partial ZIP.
+                    if downloaded > 0 and response.status_code != 206:
+                        logger.warning(
+                            "Сервер не подтвердил Range; загрузка начата заново"
+                        )
+                        downloaded = 0
 
-                mode = "ab" if downloaded > 0 else "wb"
-
-                with open(tmp_file, mode) as f:
-                    for chunk in response.iter_content(CHUNK_SIZE):
-                        if chunk:
-                            f.write(chunk)
-
-                response.close()
+                    mode = "ab" if downloaded > 0 else "wb"
+                    with open(tmp_file, mode) as file_obj:
+                        for chunk in response.iter_content(CHUNK_SIZE):
+                            if chunk:
+                                file_obj.write(chunk)
+                finally:
+                    response.close()
                 return
 
             except (
                     requests.exceptions.ChunkedEncodingError,
                     requests.exceptions.ConnectionError,
                     requests.exceptions.Timeout,
-            ) as e:
-                logger.warning(f"Download failed (attempt {attempt}): {e}")
+                    CdseQueryError,
+            ) as exc:
+                logger.warning(
+                    "Download failed (attempt %s/%s): %s",
+                    attempt,
+                    MAX_RETRIES,
+                    exc,
+                )
 
                 if attempt == MAX_RETRIES:
-                    raise
+                    raise CdseDownloadError(
+                        f"Не удалось скачать продукт {product_id}"
+                    ) from exc
 
                 time.sleep(2 ** attempt)
 
     @staticmethod
     def build_target_dir(
             product: ProductRecord,
-            archive_root: str = "/mnt/map/Snapshots",
+            archive_root: str | Path,
     ) -> Path:
         """
-        /mnt/map/Snapshots/2026/38ULA/
+        Возвращает каталог архива в формате ``корень/год/тайл``.
+
+        Например: ``/mnt/map/Snapshots/2026/38ULA/``.
         """
         year = product.date[:4] if product.date else "unknown"
         tile = normalize_tile(product.tile) if product.tile else "unknown"
@@ -90,11 +108,13 @@ class ODataProductDownloader:
         Финальный ZIP:
         /mnt/map/Snapshots/2026/38ULA/S2A_MSIL2A_....SAFE.zip
         """
-        return target_dir / f"{product.name}.zip"
+        return target_dir / product.archive_name
 
-    def download_product(self,
-                         product: ProductRecord,
-                         archive_root="/mnt/map/Snapshots") -> Path:
+    def download_product(
+            self,
+            product: ProductRecord,
+            archive_root: str | Path,
+    ) -> Path:
         """Скачивание продукта."""
         target_dir = self.build_target_dir(product, archive_root)
         ensure_dir(target_dir)
@@ -104,12 +124,18 @@ class ODataProductDownloader:
         if zip_path.exists():
             return zip_path
 
-        tmp_file = target_dir / f"{product.name}.zip.tmp"
+        tmp_file = target_dir / f"{product.archive_name}.tmp"
+
+        # Процесс мог завершиться после полной загрузки, но до rename.
+        if tmp_file.exists() and zipfile.is_zipfile(tmp_file):
+            os.replace(tmp_file, zip_path)
+            return zip_path
 
         self._download_with_resume(product.product_id, tmp_file)
 
         if not zipfile.is_zipfile(tmp_file):
             head = tmp_file.read_bytes()[:64]
+            tmp_file.unlink(missing_ok=True)
             raise CdseDownloadError(
                 f"CDSE вернул не ZIP. HEAD={head}"
             )

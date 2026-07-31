@@ -1,25 +1,47 @@
 """GeoServerClient на базе geoserver-rest (geo.Geoserver.Geoserver)."""
+from __future__ import annotations
+
 import os
+from dataclasses import dataclass
 
 import requests
-from geoserver.catalog import Catalog
-from geoserver.catalog import FailedRequestError
-from geoserver.resource import FeatureType
+from geoserver.catalog import Catalog, FailedRequestError
 from geoserver.store import UnsavedCoverageStore
 
-from core import settings
 from core.logging import get_logger
+
+
+@dataclass(frozen=True)
+class GeoServerConfig:
+    """Параметры подключения и рабочая область GeoServer."""
+
+    host: str
+    workspace: str
+    username: str
+    password: str
+
+    @property
+    def base_url(self) -> str:
+        """Возвращает базовый HTTP-адрес GeoServer."""
+        return f"http://{self.host}/geoserver"
 
 
 class GeoServerClient:
     """Клиент для GeoServer на основе geoserver-rest."""
 
-    def __init__(self):
+    def __init__(
+            self,
+            config: GeoServerConfig,
+            http: requests.Session | None = None,
+    ):
+        self.config = config
         self.cat = Catalog(
-            f"http://{settings.GS_HOST}/geoserver/rest",
-            settings.GS_USERNAME, settings.GS_PASSWORD
+            f"{config.base_url}/rest",
+            config.username,
+            config.password,
         )
-        self.workspace = settings.GS_WORKSPACE
+        self.workspace = config.workspace
+        self.http = http or requests.Session()
         self.logger = get_logger(__class__.__name__)
 
     def create_coveragestore(
@@ -108,9 +130,7 @@ class GeoServerClient:
         """Устанавливаем стиль для слоя."""
         layer = self.cat.get_layer(layer_name)
         if not layer:
-            raise RuntimeError(
-                "Слой %s не найден в GeoServer", layer_name
-            )
+            raise RuntimeError(f"Слой {layer_name} не найден в GeoServer")
 
         layer._set_default_style(style_name)
         self.cat.save(layer)
@@ -121,7 +141,7 @@ class GeoServerClient:
         """
         full_layer = f"{self.workspace}:{layer_name}"
 
-        url = f"http://{settings.GS_HOST}/geoserver/gwc/rest/layers/{full_layer}.xml"
+        url = f"{self.config.base_url}/gwc/rest/layers/{full_layer}.xml"
 
         payload = f"""<?xml version="1.0" encoding="UTF-8"?>
         <GeoServerLayer>
@@ -144,9 +164,9 @@ class GeoServerClient:
 
         headers = {"Content-Type": "application/xml"}
 
-        resp = requests.put(
+        resp = self.http.put(
             url, data=payload.encode("utf-8"),
-            auth=(settings.GS_USERNAME, settings.GS_PASSWORD),
+            auth=(self.config.username, self.config.password),
             headers=headers, timeout=30
         )
 
@@ -182,7 +202,7 @@ class GeoServerClient:
 
         full_layer = f"{self.workspace}:{layer_name}"
 
-        url = f"http://{settings.GS_HOST}/geoserver/gwc/rest/seed/{full_layer}.xml"
+        url = f"{self.config.base_url}/gwc/rest/seed/{full_layer}.xml"
 
         payload = f"""<?xml version="1.0" encoding="UTF-8"?>
                 <seedRequest>
@@ -218,10 +238,10 @@ class GeoServerClient:
             bbox,
         )
 
-        resp = requests.post(
+        resp = self.http.post(
             url,
             data=payload.encode("utf-8"),
-            auth=(settings.GS_USERNAME, settings.GS_PASSWORD),
+            auth=(self.config.username, self.config.password),
             headers=headers,
             timeout=600,
         )

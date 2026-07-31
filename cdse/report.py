@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 
 from core.logging import get_logger
+
 from .models import ProductRecord
 from .utils import disk_usage, human_size
 
@@ -12,7 +13,7 @@ logger = get_logger("CdseReport")
 
 def print_products_report(
         records: list[ProductRecord],
-        archive_base: str = "/mnt/map/Snapshots",
+        archive_base: str,
 ) -> None:
     """
     Печатает таблицу и сводку.

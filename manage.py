@@ -2,7 +2,7 @@
 import sys
 
 
-def main() -> None:
+def main() -> int:
     """Запуск проекта с помощью команд."""
     try:
         from core.management.manager import execute_from_command_line
@@ -11,8 +11,8 @@ def main() -> None:
             "Невозможно импортировать модуль вызова команд проект SENTINEL"
         ) from exc
 
-    execute_from_command_line(sys.argv)
+    return execute_from_command_line(sys.argv)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

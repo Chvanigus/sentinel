@@ -1,230 +1,112 @@
 """Класс для работы с тайлами."""
 import os
-import shutil
+from pathlib import Path
 
-from glob2 import glob
-
-from core import settings
-from core.utils import get_basename
-from processing.indexes import IndexProcessing
-from processing.processors.base import BaseImageProcessor, BasePathManager
-from processing.rastr import RastrProcessing
+from processing.domain import ProductLevel
+from processing.indexes import SpectralIndexProcessor
+from processing.processors.base import BaseImageProcessor
+from processing.raster import RasterProcessor
 
 
 class TileImageProcessor(BaseImageProcessor):
-    def _process_files(self):
+    """Создаёт tile-level TCI, NDVI и NDWI из каналов Sentinel."""
+
+    def __init__(self, scene, paths, output_archive, options):
+        super().__init__(scene, paths)
+        self.output_archive = output_archive
+        self.options = options
+
+    def run(self) -> None:
+        """Готовит цветной растр и рассчитывает спектральные индексы тайла."""
         # 1) растерные этапы: TCI и SCL
         self._process_raster_stages()
 
         # 2) индексные этапы: NDVI и NDWI
-        self._process_index_stage(
-            stage="ndvi",
-            band1="b04",
-            band2="b08",
-            creator=IndexProcessing.create_ndvi_image
-        )
-        self._process_index_stage(
-            stage="ndwi",
-            band1="b03",
-            band2="b08",
-            creator=IndexProcessing.create_ndwi_image
-        )
+        self._process_indices()
 
-    def _process_raster_stages(self):
+    def _process_raster_stages(self) -> None:
         """Подготовка TCI (10m) и SCL (20m) из JP2 → projection_raster."""
-        for stage in ("tci", "scl"):
-            src = self._get_first_source(stage)
+        stages = ["tci"]
+        if self.scene.level is ProductLevel.L2A:
+            stages.append("scl")
+
+        for stage in stages:
+            stage_sources = self.paths.sources(stage)
+            src = stage_sources[0] if stage_sources else None
             if src is None:
-                return
+                raise FileNotFoundError(
+                    f"Не найден исходник для {stage.upper()}"
+                )
             self.logger.info(
                 "Обработка изображения %s (%s)",
-                get_basename(src), stage.upper()
+                Path(src).name, stage.upper()
             )
-            if not src:
-                self.logger.warning(
-                    "Не найден исходник для %s, пропуск", stage.upper()
-                )
-                continue
-
-            dst = self.pm.get_destination(stage=stage)
+            dst = self.paths.destination(stage)
             if os.path.exists(dst):
                 self.logger.info("%s уже есть, пропуск", stage.upper())
+                self.output_archive.store(self.scene, dst, stage)
                 continue
 
-            RastrProcessing(src, dst_path=dst).projection_raster(dst_path=dst)
+            RasterProcessor(src, dst).translate_to_geotiff()
             self.logger.info("%s готово: %s", stage.upper(), dst)
 
-            self._copy_to_geoware(dst, stage)
+            self.output_archive.store(self.scene, dst, stage)
 
-    def _process_index_stage(
-            self,
-            stage: str,
-            band1: str,
-            band2: str,
-            creator: callable
-    ):
-        """Общий метод для индексов: берём два JP2, создаём индекс."""
-        jp2_1 = self._get_first_source(band1)
-        jp2_2 = self._get_first_source(band2)
-        if not jp2_1 or not jp2_2:
-            self.logger.error(
-                "Не найдены %s/%s для %s",
-                band1.upper(), band2.upper(), stage.upper(),
-            )
-            return
-
-        dst = self.pm.get_destination(stage=stage)
-        self.logger.info(
-            "Обработка индекса %s (%s) из бандов %s и %s",
-            stage.upper(), get_basename(dst), band1.upper(), band2.upper()
-        )
-        if os.path.exists(dst):
-            self.logger.info("%s уже есть, пропуск", stage.upper())
-            return
-
-        idx = IndexProcessing(
-            output_file=dst,
-            **{f"{band1}_file": jp2_1, f"{band2}_file": jp2_2}
-        )
-        creator(idx)
-        self.logger.info("%s готово: %s", stage.upper(), dst)
-
-        self._copy_to_geoware(dst, stage)
-
-    def _get_first_source(self, stage: str) -> str:
-        """
-        Возвращает первый путь из self.pm.get_sources
-        или None, если список пуст.
-        """
-        sources = self.pm.get_sources(stage=stage)
-        return sources[0] if sources else None
-
-    def _copy_to_geoware(self, src_path: str, img_type: str):
-        """Копирует готовый файл в geoware по шаблону /<год>/<тайл>/<img_type>/<месяц>/"""
-        if not os.path.exists(src_path):
-            self.logger.warning("Файл не найден для копирования: %s", src_path)
-            return
-
-        tile_upper = self.tile.upper()
-        day, month_str, year_str = self.date.split("_")
-        year = int(year_str)
-        month = int(month_str)
-
-        dst_dir = os.path.join(
-            "/mnt/map/geoware",
-            str(year),
-            tile_upper,
-            img_type.lower(),
-            f"{month:02d}"
-        )
-        os.makedirs(dst_dir, exist_ok=True)
-
-        dst_path = os.path.join(dst_dir, os.path.basename(src_path))
-        shutil.copy2(src_path, dst_path)
-        self.logger.info("Файл скопирован в geoware: %s", dst_path)
-
-        if getattr(self.pm, "level", "").lower() == "msil2a" and img_type.lower() != "scl":
-            scl_sources = self.pm.get_sources("scl")
-            for scl_src in scl_sources:
-                scl_dst_dir = os.path.join(
-                    "/mnt/map/geoware",
-                    str(year),
-                    tile_upper,
-                    "scl",
-                    f"{month:02d}"
+    def _process_indices(self) -> None:
+        """Создаёт отсутствующие NDVI/NDWI с однократным чтением B08."""
+        outputs = {}
+        for product in ("ndvi", "ndwi"):
+            destination = self.paths.destination(product)
+            if os.path.exists(destination):
+                self.logger.info("%s уже есть, пропуск", product.upper())
+                self.output_archive.store(
+                    self.scene,
+                    destination,
+                    product,
                 )
-                os.makedirs(scl_dst_dir, exist_ok=True)
-                scl_dst_path = os.path.join(scl_dst_dir,
-                                            os.path.basename(scl_src))
-                if os.path.exists(scl_src):
-                    shutil.copy2(scl_src, scl_dst_path)
-                    self.logger.info("SCL файл скопирован в geoware: %s",
-                                     scl_dst_path)
+            else:
+                outputs[product] = destination
+        if not outputs:
+            return
 
+        required_bands = {"b08"}
+        if "ndvi" in outputs:
+            required_bands.add("b04")
+        if "ndwi" in outputs:
+            required_bands.add("b03")
+        sources = {}
+        for band in sorted(required_bands):
+            band_sources = self.paths.sources(band)
+            sources[band] = band_sources[0] if band_sources else None
+        missing_bands = [
+            band.upper()
+            for band, path in sources.items()
+            if path is None
+        ]
+        if missing_bands:
+            raise FileNotFoundError(
+                "Не найдены каналы для индексов: "
+                + ", ".join(missing_bands)
+            )
 
-class L2APathManager(BasePathManager):
-    """PathManager для L2A обработки снимков."""
-    def get_sources(self, stage, agroid=None):
-        base = settings.TEMP_PROCESSING_DIR
-
-        bands = {
-            "tci": "TCI",
-            "scl": "SCL",
-            "b03": "B03",
-            "b04": "B04",
-            "b08": "B08",
-        }.get(stage)
-
-        if not bands:
-            return []
-
-        resolution = 20 if stage == "scl" else 10
-
-        pattern = os.path.join(
-            base,
-            f"{self.satellite.upper()}_MSIL2A*{self.tile.upper()}*",
-            "GRANULE",
-            f"L2A_{self.tile.upper()}*",
-            "IMG_DATA",
-            f"R{resolution}m",
-            f"{self.tile.upper()}*{bands}_{resolution}m.jp2",
+        self.logger.info(
+            "Обработка индексов %s с общим каналом B08",
+            ", ".join(product.upper() for product in outputs),
         )
-        return glob(pattern)
-
-    def get_destination(self, stage, agroid=None):
-        out = settings.INTERMEDIATE
-        name = f"{self.satellite}_{self.tile}_{self.date}_{stage}_3857.tif"
-        return os.path.join(out, name)
-
-
-class L1CPathManager(BasePathManager):
-    """PathManager для L1C обработки снимков."""
-    def get_sources(self, stage, agroid=None):
-        base = settings.TEMP_PROCESSING_DIR
-
-        if stage == "scl":
-            return []
-
-        bands = {
-            "tci": "TCI",
-            "b03": "B03",
-            "b04": "B04",
-            "b08": "B08",
-        }.get(stage)
-
-        if not bands:
-            return []
-
-        pattern = os.path.join(
-            base,
-            f"{self.satellite.upper()}_MSIL1C*{self.tile.upper()}*",
-            "GRANULE",
-            f"L1C_{self.tile.upper()}*",
-            "IMG_DATA",
-            f"{self.tile.upper()}*_{bands}.jp2",
-        )
-        return glob(pattern)
-
-    def get_destination(self, stage, agroid=None):
-        out = settings.INTERMEDIATE
-        name = f"{self.satellite}_{self.tile}_{self.date}_{stage}_3857.tif"
-        return os.path.join(out, name)
-
-
-def execute_tile_image_processor(**kwargs) -> None:
-    """
-    Вызов класса обработки архива со
-    спутниковыми изображениями L2A или L1C уровня.
-    :param kwargs: Дополнительные параметры для обработки архива.
-    """
-    level = kwargs.get("level")
-
-    if level == "msil2a":
-        pm = L2APathManager(**kwargs)
-    elif level == "msil1c":
-        pm = L1CPathManager(**kwargs)
-    else:
-        raise ValueError(f"Неизвестный уровень обработки: {level}")
-
-    processor = TileImageProcessor(**kwargs, path_manager=pm)
-    processor.execute()
+        SpectralIndexProcessor(
+            b03_file=sources.get("b03"),
+            b04_file=sources.get("b04"),
+            b08_file=sources["b08"],
+            nodata=self.options.nodata,
+        ).create(outputs)
+        for product, destination in outputs.items():
+            self.logger.info(
+                "%s готово: %s",
+                product.upper(),
+                destination,
+            )
+            self.output_archive.store(
+                self.scene,
+                destination,
+                product,
+            )

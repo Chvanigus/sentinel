@@ -1,7 +1,8 @@
 """HTTP клиент Copernicus Data Space Ecosystem (OData)."""
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urljoin
 
 import requests
@@ -9,10 +10,9 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from core.logging import get_logger
-from core.settings import API_URL, DOWNLOAD_URL, PAGE_LIMIT
+
 from .auth import CdseTokenProvider
 from .exceptions import CdseQueryError
-from .proxy import ProxySession
 
 logger = get_logger("CdseODataClient")
 
@@ -25,13 +25,13 @@ class CdseODataClient:
     def __init__(
             self,
             token_provider: CdseTokenProvider,
-            session: Optional[requests.Session] = None,
-            catalogue_base: str = API_URL,
-            download_base: str = DOWNLOAD_URL,
+            catalogue_base: str,
+            download_base: str,
+            session: requests.Session | None = None,
             timeout: int = 60,
     ) -> None:
         self.token_provider = token_provider
-        self.session = session or token_provider.session or ProxySession()
+        self.session = session or token_provider.session
         self.catalogue_base = catalogue_base.rstrip("/")
         self.download_base = download_base.rstrip("/")
         self.timeout = timeout
@@ -101,25 +101,32 @@ class CdseODataClient:
             self,
             url: str,
             *,
-            params: Optional[dict[str, Any]] = None,
+            params: dict[str, Any] | None = None,
             authorized: bool = True,
     ) -> Iterable[dict[str, Any]]:
         """
         Итерирует все страницы через @odata.nextLink.
         """
-        next_url: Optional[str] = url
+        next_url: str | None = url
         next_params = params
-        page_no = 0
 
         while next_url:
-            page_no += 1
             response = self.request(
                 "GET",
                 next_url,
                 authorized=authorized,
                 params=next_params,
             )
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise CdseQueryError(
+                    f"CDSE вернул не-JSON ответ для {next_url}"
+                ) from exc
+            if not isinstance(data, dict):
+                raise CdseQueryError(
+                    f"CDSE вернул неожиданный JSON для {next_url}"
+                )
             yield data
 
             next_link = data.get("@odata.nextLink") or data.get(
@@ -135,10 +142,10 @@ class CdseODataClient:
             self,
             *,
             filter_expr: str,
-            top: int = PAGE_LIMIT,
-            orderby: Optional[str] = None,
-            select: Optional[list[str]] = None,
-            expand: Optional[list[str]] = None,
+            top: int = 500,
+            orderby: str | None = None,
+            select: list[str] | None = None,
+            expand: list[str] | None = None,
             authorized: bool = True,
     ) -> Iterable[dict[str, Any]]:
         """
@@ -168,10 +175,10 @@ class CdseODataClient:
             self,
             *,
             filter_expr: str,
-            top: int = PAGE_LIMIT,
-            orderby: Optional[str] = None,
-            select: Optional[list[str]] = None,
-            expand: Optional[list[str]] = None,
+            top: int = 500,
+            orderby: str | None = None,
+            select: list[str] | None = None,
+            expand: list[str] | None = None,
             authorized: bool = True,
     ) -> list[dict[str, Any]]:
         """Возвращает все продукты списком."""

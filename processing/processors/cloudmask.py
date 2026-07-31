@@ -1,12 +1,11 @@
 """Класс для обработки спутниковых снимков с помощью маски облачности."""
 import os
 
-import numpy as np
 from osgeo import gdal
 
-from core import settings
-from processing.dataset import GDALDatasetProcessing
-from processing.processors.base import BaseImageProcessor, BasePathManager
+from processing.calculations import apply_scl_mask
+from processing.dataset import RasterArrayWriter, open_raster
+from processing.processors.base import BaseImageProcessor
 
 
 class RescaleSCLProcessor(BaseImageProcessor):
@@ -15,23 +14,19 @@ class RescaleSCLProcessor(BaseImageProcessor):
     основываясь на разрешении NDVI.
     """
 
-    def __init__(self,
-                 tile,
-                 date,
-                 satellite,
-                 agroids,
-                 path_manager,
-                 level=None):
-        super().__init__(tile, date, satellite, path_manager, level)
-        self.agroids = agroids
+    def run(self) -> None:
+        """Ресемплирует SCL каждого хозяйства до сетки соответствующего NDVI."""
+        for agroid in self.scene.agroids:
+            ndvi_path = self.paths.ndvi(agroid)
+            if not os.path.exists(ndvi_path):
+                self.logger.warning("NDVI не найден: %s", ndvi_path)
+                continue
 
-    def _process_files(self):
-        for agroid in self.agroids:
-            ndvi_path = self.pm.get_sources(stage="ndvi", agroid=agroid)[0]
-            if not os.path.exists(ndvi_path): continue
-
-            scl_src = self.pm.get_sources(stage="scl_20", agroid=agroid)[0]
-            scl_dst = self.pm.get_destination(stage="scl_10", agroid=agroid)
+            scl_src = self.paths.scl_20m(agroid)
+            if not os.path.exists(scl_src):
+                self.logger.warning("SCL не найден: %s", scl_src)
+                continue
+            scl_dst = self.paths.scl_10m(agroid)
 
             if os.path.exists(scl_dst):
                 self.logger.info(
@@ -39,42 +34,66 @@ class RescaleSCLProcessor(BaseImageProcessor):
                 )
                 continue
 
-            ndvi_ds = gdal.Open(ndvi_path)
-            scl_ds = gdal.Open(scl_src)
-
-            xres = ndvi_ds.GetGeoTransform()[1]
-            yres = ndvi_ds.GetGeoTransform()[5]
-
-            gdal.Warp(
-                scl_dst, scl_ds,
-                xRes=xres, yRes=yres,
-                resampleAlg=gdal.GRA_Bilinear
-            )
+            with open_raster(ndvi_path) as ndvi_ds, open_raster(
+                    scl_src
+            ) as scl_ds:
+                result = gdal.Warp(
+                    scl_dst,
+                    scl_ds,
+                    format="GTiff",
+                    width=ndvi_ds.RasterXSize,
+                    height=ndvi_ds.RasterYSize,
+                    outputBounds=self._get_bounds_from_ds(ndvi_ds),
+                    outputBoundsSRS=ndvi_ds.GetProjection(),
+                    dstSRS=ndvi_ds.GetProjection(),
+                    resampleAlg=gdal.GRA_NearestNeighbour,
+                    multithread=True,
+                    warpOptions=["NUM_THREADS=ALL_CPUS"],
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"Не удалось ресемплировать SCL для агро {agroid}"
+                    )
+                result.FlushCache()
+                result = None
             self.logger.info("SCL ресемплирован до 10м: %s", scl_dst)
+
+    @staticmethod
+    def _get_bounds_from_ds(ds):
+        """Вычисляет границы GDAL dataset по его геотрансформации."""
+        gt = ds.GetGeoTransform()
+        return (
+            gt[0],
+            gt[3] + gt[5] * ds.RasterYSize,
+            gt[0] + gt[1] * ds.RasterXSize,
+            gt[3],
+        )
 
 
 class FilterNDVIProcessor(BaseImageProcessor):
     """Фильтрует NDVI с использованием SCL-маски (10м)."""
-    VALID_SCL_VALUES = [4, 5, 6, 7]
+    VALID_SCL_VALUES = (4, 5, 6, 7)
 
     def __init__(self,
-                 tile,
-                 date,
-                 satellite,
-                 agroids,
-                 path_manager,
-                 level=None):
-        super().__init__(tile, date, satellite, path_manager, level)
-        self.agroids = agroids
+                 scene,
+                 paths,
+                 options):
+        super().__init__(scene, paths)
+        self.options = options
 
-    def _process_files(self, *_):
-        for agroid in self.agroids:
-            ndvi_path = self.pm.get_sources(stage="ndvi", agroid=agroid)[0]
-            if not os.path.exists(ndvi_path): continue
+    def run(self) -> None:
+        """Заменяет невалидные по SCL пиксели NDVI значением nodata."""
+        for agroid in self.scene.agroids:
+            ndvi_path = self.paths.ndvi(agroid)
+            if not os.path.exists(ndvi_path):
+                self.logger.warning("NDVI не найден: %s", ndvi_path)
+                continue
 
-            scl_path = self.pm.get_sources(stage="scl_10", agroid=agroid)[0]
-            dst_ndvi = self.pm.get_destination(stage="ndvi_filtered",
-                                               agroid=agroid)
+            scl_path = self.paths.scl_10m(agroid)
+            if not os.path.exists(scl_path):
+                self.logger.warning("SCL 10m не найден: %s", scl_path)
+                continue
+            dst_ndvi = self.paths.filtered_ndvi(agroid)
 
             if os.path.exists(dst_ndvi):
                 self.logger.info(
@@ -83,81 +102,23 @@ class FilterNDVIProcessor(BaseImageProcessor):
                 )
                 continue
 
-            scl_ds = gdal.Open(scl_path)
-            scl_array = scl_ds.GetRasterBand(1).ReadAsArray()
+            with open_raster(ndvi_path) as ndvi_ds, open_raster(
+                    scl_path
+            ) as scl_ds:
+                ndvi_array = ndvi_ds.GetRasterBand(1).ReadAsArray()
+                scl_array = scl_ds.GetRasterBand(1).ReadAsArray()
 
-            base = settings.TEMP_PROCESSING_DIR
-            tmp_resampled_ndvi = os.path.join(
-                base, f"res_ndvi_a{agroid}.tif"
+            filtered = apply_scl_mask(
+                ndvi_array,
+                scl_array,
+                valid_classes=self.VALID_SCL_VALUES,
+                nodata=self.options.nodata,
             )
 
-            gdal.Warp(tmp_resampled_ndvi, ndvi_path,
-                      width=scl_ds.RasterXSize,
-                      height=scl_ds.RasterYSize,
-                      outputBounds=self._get_bounds_from_ds(scl_ds),
-                      resampleAlg=gdal.GRA_Bilinear,
-                      dstSRS=scl_ds.GetProjection())
-
-            # Чтение временного массива
-            ds = gdal.Open(tmp_resampled_ndvi)
-            band = ds.GetRasterBand(1)
-            ndvi_array = band.ReadAsArray()
-
-            mask = np.isin(scl_array, self.VALID_SCL_VALUES)
-
-            filtered = np.where(mask, ndvi_array, settings.NODATA)
-
-            GDALDatasetProcessing(
-                scl_path, dst_ndvi, filtered
-            ).create_file_from_array()
+            RasterArrayWriter(
+                source=ndvi_path,
+                destination=dst_ndvi,
+                nodata=self.options.nodata,
+            ).write(filtered)
 
             self.logger.info("NDVI отфильтрован для агро %s", agroid)
-
-    @staticmethod
-    def _get_bounds_from_ds(ds):
-        gt = ds.GetGeoTransform()
-        return (gt[0], gt[3] + gt[5] * ds.RasterYSize,
-                gt[0] + gt[1] * ds.RasterXSize, gt[3])
-
-
-class CloudPathManager(BasePathManager):
-    def get_sources(self, stage, agroid=None):
-        if stage == "scl_20":
-            base = settings.INTERMEDIATE
-        else:
-            base = settings.PROCESSED_DIR
-        stage_map = {
-            "ndvi": f"{self.satellite}_{self.date}_a{agroid}_ndvi_10m_3857.tif",
-            "scl_20": f"{self.satellite}_{self.date}_a{agroid}_scl_20m_3857.tif",
-            "scl_10": f"{self.satellite}_{self.date}_a{agroid}_scl_10m_3857.tif",
-        }
-        return [os.path.join(base, stage_map[stage])]
-
-    def get_destination(self, stage, agroid=None) -> str:
-        if stage == "scl_10":
-            base = settings.PROCESSED_DIR
-        else:
-            base = settings.INTERMEDIATE
-        paths = {
-            "scl_10": f"{self.satellite}_{self.date}_a{agroid}_scl_10m_3857.tif",
-            "ndvi_filtered": f"{self.satellite}_{self.date}_a{agroid}_ndvi_10m_3857_filtered.tif"
-        }
-        return os.path.join(base, paths.get(stage))
-
-
-def execute_cloud_mask_image_processor(agroids: list, **kwargs) -> None:
-    """
-    Вызов класса для создания маски облачности.
-    :param agroids: Список агропредприятий для обработки.
-    :param kwargs: Дополнительные параметры для обработки снимков.
-    """
-    pm = CloudPathManager(**kwargs)
-
-    if kwargs["level"] == "msil1c":
-        return
-
-    rescaler = RescaleSCLProcessor(agroids=agroids, path_manager=pm, **kwargs)
-    rescaler.execute()
-
-    filterer = FilterNDVIProcessor(agroids=agroids, path_manager=pm, **kwargs)
-    filterer.execute()
