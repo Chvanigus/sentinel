@@ -2,7 +2,7 @@
 Команда загрузки спутниковых снимков Sentinel-2
 из Copernicus Data Space Ecosystem (через OData).
 """
-from datetime import date
+from datetime import date, timedelta
 
 from cdse.composition import build_cdse_service
 from cdse.report import print_products_report
@@ -18,6 +18,30 @@ from core.settings import (
 
 logger = get_logger("CDSE Downloader")
 
+DEFAULT_LOOKBACK_DAYS = 3
+
+
+def resolve_download_range(
+        *,
+        start: str | None,
+        end: str | None,
+        lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+        today: date | None = None,
+) -> tuple[str, str]:
+    """Возвращает включительный диапазон поиска для ручного или ночного запуска."""
+    if lookback_days < 1:
+        raise ValueError("--lookback-days должен быть положительным числом")
+
+    end_date = date.fromisoformat(end) if end else (today or date.today())
+    start_date = (
+        date.fromisoformat(start)
+        if start
+        else end_date - timedelta(days=lookback_days - 1)
+    )
+    if start_date > end_date:
+        raise ValueError("Дата начала не может быть позже даты окончания")
+    return start_date.isoformat(), end_date.isoformat()
+
 
 class Command(BaseCommand):
     """
@@ -29,8 +53,17 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         """Добавляет диапазон поиска и флаг скачивания продуктов."""
-        parser.add_argument("--start", required=True)
+        parser.add_argument("--start")
         parser.add_argument("--end")
+        parser.add_argument(
+            "--lookback-days",
+            type=int,
+            default=DEFAULT_LOOKBACK_DAYS,
+            help=(
+                "Количество календарных дней поиска, включая конечную дату, "
+                f"если --start не задан (по умолчанию: {DEFAULT_LOOKBACK_DAYS})"
+            ),
+        )
         parser.add_argument(
             "--download",
             action="store_true",
@@ -39,8 +72,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         """Ищет продукты, печатает отчёт и при необходимости скачивает архивы."""
-        start = options["start"]
-        end = options["end"] or date.today().isoformat()
+        start, end = resolve_download_range(
+            start=options["start"],
+            end=options["end"],
+            lookback_days=options["lookback_days"],
+        )
         do_download = options.get("download")
 
         service = build_cdse_service()

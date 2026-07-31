@@ -73,11 +73,22 @@ python -m venv .venv
 python manage.py help
 python manage.py download --start 2026-07-01 --end 2026-07-31
 python manage.py download --start 2026-07-01 --end 2026-07-31 --download
+python manage.py download --lookback-days 3 --download
 python manage.py processing --year 2026 --month 7
 ```
 
+Если `--start` не указан, команда загрузки ищет продукты за последние три
+календарных дня, включая текущую или переданную через `--end` дату. Повторный
+поиск безопасен: уже находящиеся в архиве ZIP-файлы не скачиваются заново.
+
 Пути архива и рабочих директорий задаются через `.env`. Во всех компонентах
 используется единый `ARCHIVE_ROOT`; регистр имени каталога важен на Linux.
+
+## Автоматизация
+
+Готовые unit-файлы для последовательного ночного запуска загрузки и обработки
+находятся в [`deploy/systemd`](deploy/systemd/README.md). Таймер срабатывает
+ежедневно в 03:00 и требует запущенный `xray.service`.
 
 ## Проверки
 

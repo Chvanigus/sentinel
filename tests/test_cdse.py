@@ -15,6 +15,7 @@ from cdse.models import ProductRecord
 from cdse.search import ODataProductSearcher
 from cdse.service import CdseService
 from cdse.utils import normalize_tile, split_date_range
+from cli.commands.download import resolve_download_range
 from core.settings import (
     L1C_COLLECTION,
     L1C_PRODUCT_TYPE,
@@ -34,6 +35,37 @@ def product(**overrides) -> ProductRecord:
     }
     values.update(overrides)
     return ProductRecord(**values)
+
+
+def test_download_range_defaults_to_three_calendar_days():
+    """Ночной диапазон включает текущую дату и два предыдущих дня."""
+    assert resolve_download_range(
+        start=None,
+        end=None,
+        today=date(2026, 7, 31),
+    ) == ("2026-07-29", "2026-07-31")
+
+
+def test_download_range_uses_explicit_dates():
+    """Ручной диапазон имеет приоритет над автоматическим окном."""
+    assert resolve_download_range(
+        start="2026-07-01",
+        end="2026-07-15",
+        lookback_days=7,
+    ) == ("2026-07-01", "2026-07-15")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"start": None, "end": None, "lookback_days": 0},
+        {"start": "2026-07-31", "end": "2026-07-01"},
+    ],
+)
+def test_download_range_rejects_invalid_values(kwargs):
+    """Нулевое окно и обратный диапазон отклоняются."""
+    with pytest.raises(ValueError):
+        resolve_download_range(**kwargs)
 
 
 class FakeResponse:

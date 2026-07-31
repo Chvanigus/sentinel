@@ -1,0 +1,20 @@
+[Unit]
+Description=Sentinel nightly download and processing
+Documentation=file:/home/sysop/sentinel/deploy/systemd/README.md
+Requires=xray.service
+Wants=network-online.target
+After=network-online.target xray.service
+
+[Service]
+Type=oneshot
+User=sysop
+Group=sysop
+WorkingDirectory=/home/sysop/sentinel
+Environment=PYTHONUNBUFFERED=1
+UMask=0027
+ExecStartPre=/usr/bin/test -r /home/sysop/sentinel/.env
+ExecStartPre=/usr/bin/test -x /home/sysop/sentinel/.venv/bin/python
+ExecStart=/home/sysop/sentinel/.venv/bin/python /home/sysop/sentinel/manage.py download --lookback-days 3 --download
+ExecStart=/home/sysop/sentinel/.venv/bin/python /home/sysop/sentinel/manage.py processing
+TimeoutStartSec=infinity
+
