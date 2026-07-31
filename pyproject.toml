@@ -11,8 +11,8 @@ requires-python = ">=3.9"
 dependencies = [
     "geojson>=3.0,<4",
     "geoserver-restconfig>=2.0.9,<3",
-    "numpy>=1.26,<3",
-    "opencv-python-headless>=4.8,<5",
+    "numpy>=1.26,<2",
+    "opencv-python-headless>=4.8,<4.12",
     "psycopg2-binary>=2.9,<3",
     "python-dotenv>=1.0,<2",
     "requests[socks]>=2.32,<3",

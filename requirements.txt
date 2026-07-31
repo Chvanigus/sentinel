@@ -2,8 +2,10 @@
 # match the native GDAL library installed on the target machine.
 geojson>=3.0,<4
 geoserver-restconfig>=2.0.9,<3
-numpy>=1.26,<3
-opencv-python-headless>=4.8,<5
+# The server GDAL bindings are compiled against the NumPy 1.x C ABI.
+numpy>=1.26,<2
+# OpenCV 4.12+ requires NumPy 2 on Python 3.9.
+opencv-python-headless>=4.8,<4.12
 psycopg2-binary>=2.9,<3
 python-dotenv>=1.0,<2
 requests[socks]>=2.32,<3

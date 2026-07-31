@@ -462,6 +462,20 @@ def _annotations(node: ast.AST) -> list[ast.expr]:
     return []
 
 
+def test_dependencies_preserve_server_gdal_numpy_abi():
+    """Runtime-зависимости сохраняют совместимость с серверным GDAL ABI."""
+    root = Path(__file__).parents[1]
+    requirements = (root / "requirements.txt").read_text(encoding="utf-8")
+    project = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    for dependency in (
+            "numpy>=1.26,<2",
+            "opencv-python-headless>=4.8,<4.12",
+    ):
+        assert dependency in requirements
+        assert f'"{dependency}"' in project
+
+
 def test_python_sources_have_russian_docstrings():
     """Каждый модуль, класс и именованная функция имеют русский docstring."""
     root = Path(__file__).parents[1]
