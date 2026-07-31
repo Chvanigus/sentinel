@@ -234,13 +234,3 @@ class NdviStatisticsPaths(ScenePaths):
             self.workspace.ndvi
             / f"A{agroid}_{self.scene.date_label}_FIELD{field_code}.geojson"
         )
-
-    def field_ndvi_tif(self, agroid: int, field_code: str) -> str:
-        """Возвращает путь вырезанного по полю NDVI-растра."""
-        return str(
-            self.workspace.ndvi
-            / (
-                f"A{agroid}_{self.scene.date_label}_"
-                f"FIELD{field_code}_ndvi.tif"
-            )
-        )

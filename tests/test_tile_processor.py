@@ -41,19 +41,12 @@ class RecordingArchive:
         self.stores.append((scene, source, product))
 
 
-class RecordingRasterProcessor:
-    """Имитирует GDAL-конвертацию растровых каналов."""
+RASTER_CONVERSIONS = []
 
-    conversions = []
 
-    def __init__(self, source, destination):
-        """Сохраняет источник и назначение будущей конвертации."""
-        self.source = source
-        self.destination = destination
-
-    def translate_to_geotiff(self):
-        """Запоминает запрос конвертации вместо вызова GDAL."""
-        self.conversions.append((self.source, self.destination))
+def recording_translate(source, destination):
+    """Запоминает запрос конвертации вместо вызова GDAL."""
+    RASTER_CONVERSIONS.append((source, destination))
 
 
 class RecordingIndexProcessor:
@@ -108,12 +101,12 @@ def test_run_converts_rasters_calculates_indices_and_archives_all(
         },
     )
     archive = RecordingArchive()
-    RecordingRasterProcessor.conversions = []
+    RASTER_CONVERSIONS.clear()
     RecordingIndexProcessor.initializations = []
     RecordingIndexProcessor.creations = []
     monkeypatch.setattr(
-        "processing.processors.tiles.RasterProcessor",
-        RecordingRasterProcessor,
+        "processing.processors.tiles.translate_to_geotiff",
+        recording_translate,
     )
     monkeypatch.setattr(
         "processing.processors.tiles.SpectralIndexProcessor",
@@ -128,7 +121,7 @@ def test_run_converts_rasters_calculates_indices_and_archives_all(
         SimpleNamespace(nodata=-42.0),
     ).run()
 
-    assert RecordingRasterProcessor.conversions == [
+    assert RASTER_CONVERSIONS == [
         ("tci.jp2", str(result_paths["tci"])),
         ("scl.jp2", str(result_paths["scl"])),
     ]

@@ -5,7 +5,7 @@ from datetime import date
 from db.gateway import SqlGateway
 from db.models import NdviRecord
 from db.repositories import FieldRepository, LayerRepository, NdviRepository
-from domain.models import Field, NdviStatistics
+from domain.models import Field, NdviStatistics, PublishedLayer
 
 
 def ndvi_value(field_id: int) -> NdviStatistics:
@@ -95,6 +95,37 @@ def test_missing_agroids_requires_all_published_layer_types():
     assert repository.missing_agroids(
         date(2026, 7, 1)
     ) == [3, 4, 5, 6]
+
+
+def test_layer_add_relies_on_single_idempotent_insert():
+    """Добавление слоя не выполняет лишний SELECT перед ON CONFLICT."""
+
+    class Gateway:
+        """Записывает вставку и запрещает предварительное чтение."""
+
+        def __init__(self):
+            self.calls = []
+
+        def row(self, *_args, **_kwargs):
+            """Сообщает о запрещённом предварительном чтении."""
+            raise AssertionError("Предварительный SELECT не требуется")
+
+        def insert_one(self, *args, **kwargs):
+            """Запоминает идемпотентную вставку."""
+            self.calls.append((args, kwargs))
+
+    gateway = Gateway()
+    LayerRepository(gateway).add(
+        PublishedLayer(
+            name="sentinel:a3_ndvi_2026-07-01",
+            acquired_on=date(2026, 7, 1),
+            product="ndvi",
+            agroid=3,
+        )
+    )
+
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0][1]["conflict_fields"] == "name"
 
 
 def test_field_repository_reads_geometry_batch_in_one_scope():

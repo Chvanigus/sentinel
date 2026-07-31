@@ -1,6 +1,7 @@
 """Файловые адаптеры сохранения результатов processing."""
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from processing.domain import SceneContext
 
 
 class GeowareTileArchive:
-    """Копирует tile-level результат в долговременное файловое хранилище."""
+    """Архивирует tile-level результат без лишнего копирования на одном диске."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -23,7 +24,7 @@ class GeowareTileArchive:
             source: str | Path,
             product: str,
     ) -> Path:
-        """Копирует готовый растр в иерархию год/тайл/продукт/месяц."""
+        """Атомарно связывает или копирует растр в долговременную иерархию."""
         source_path = Path(source)
         if not source_path.is_file():
             raise FileNotFoundError(source_path)
@@ -49,8 +50,26 @@ class GeowareTileArchive:
                     destination,
                 )
                 return destination
-        shutil.copy2(source_path, destination)
-        self.logger.info("Результат сохранён в geoware: %s", destination)
+
+        temporary = destination.with_suffix(destination.suffix + ".partial")
+        temporary.unlink(missing_ok=True)
+        linked = False
+        try:
+            try:
+                os.link(source_path, temporary)
+                linked = True
+            except OSError:
+                shutil.copy2(source_path, temporary)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+        operation = "hardlink" if linked else "copy"
+        self.logger.info(
+            "Результат сохранён в geoware (%s): %s",
+            operation,
+            destination,
+        )
         return destination
 
 

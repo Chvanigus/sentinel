@@ -1,5 +1,6 @@
 """Тесты поиска, авторизации и возобновляемой загрузки CDSE."""
 
+import io
 import zipfile
 from datetime import date
 
@@ -155,6 +156,71 @@ def test_complete_temporary_zip_is_promoted_without_network_call(tmp_path):
     assert result == target_dir / "SCENE.zip"
     assert result.is_file()
     assert not temporary.exists()
+
+
+def test_corrupt_final_zip_is_preserved_and_downloaded_again(tmp_path):
+    """Повреждённый финальный ZIP не блокирует последующие ночные запуски."""
+    record = product(name="SCENE.SAFE")
+    target_dir = tmp_path / "2026" / "38ULA"
+    target_dir.mkdir(parents=True)
+    final = target_dir / record.archive_name
+    final.write_bytes(b"broken")
+    valid_zip = io.BytesIO()
+    with zipfile.ZipFile(valid_zip, "w") as archive:
+        archive.writestr("manifest.safe", b"ok")
+    response = FakeResponse(200, [valid_zip.getvalue()])
+
+    result = ODataProductDownloader(
+        FakeDownloadClient(response)
+    ).download_product(record, archive_root=tmp_path)
+
+    assert result == final
+    assert zipfile.is_zipfile(result)
+    assert final.with_suffix(".zip.corrupt").read_bytes() == b"broken"
+
+
+def test_client_closes_unauthorized_response_before_retry():
+    """Ответ 401 освобождает соединение пула до повторного запроса."""
+
+    class Response:
+        """HTTP-ответ с отслеживанием закрытия."""
+
+        text = ""
+
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.closed = False
+
+        def close(self):
+            """Отмечает освобождение соединения."""
+            self.closed = True
+
+    class Tokens:
+        """Возвращает разные токены до и после refresh."""
+
+        def get_token(self, force_refresh=False):
+            """Возвращает тестовый токен."""
+            return "refreshed" if force_refresh else "initial"
+
+    class Session:
+        """Последовательно возвращает 401 и успешный ответ."""
+
+        def __init__(self, responses):
+            self.responses = responses
+
+        def request(self, *_args, **_kwargs):
+            """Возвращает следующий ответ."""
+            return self.responses.pop(0)
+
+    unauthorized = Response(401)
+    successful = Response(200)
+    client = CdseODataClient.__new__(CdseODataClient)
+    client.token_provider = Tokens()
+    client.session = Session([unauthorized, successful])
+    client.timeout = 60
+
+    assert client.request("GET", "https://example.test") is successful
+    assert unauthorized.closed is True
 
 
 def test_group_by_tile_normalizes_optional_t_prefix():

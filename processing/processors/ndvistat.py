@@ -4,14 +4,11 @@ from __future__ import annotations
 import os
 from time import perf_counter
 
-import numpy as np
-
 from domain.models import Field
-from processing.dataset import open_raster
 from processing.ndvi import NdviFieldAnalyzer
 from processing.ports import FieldDataProvider
 from processing.processors.base import BaseImageProcessor
-from processing.raster import RasterProcessor
+from processing.raster import clip_by_mask_array
 from processing.storage import FieldGeometryExporter
 
 
@@ -28,6 +25,7 @@ class NdviStatisticsProcessor(BaseImageProcessor):
         super().__init__(scene, paths)
         self.field_data = field_data
         self.geometry_exporter = geometry_exporter
+        self.nodata = nodata
         self.analyzer = NdviFieldAnalyzer(nodata_value=nodata)
 
     def _save_field_geojsons(
@@ -110,19 +108,14 @@ class NdviStatisticsProcessor(BaseImageProcessor):
                     self.logger.warning("GeoJSON не найден → %s", geojson)
                     continue
 
-                dst_tif = self.paths.field_ndvi_tif(agroid, field.name)
-                if not os.path.exists(dst_tif):
-                    RasterProcessor(
+                val = self.analyzer.analyze(
+                    ndvi=clip_by_mask_array(
                         src_ndvi,
-                        dst_tif,
-                    ).clip_by_mask(
                         geojson,
                         x_resolution=10,
                         y_resolution=10,
-                    )
-
-                val = self.analyzer.analyze(
-                    ndvi=self._load_ndvi_array(dst_tif),
+                        nodata=self.nodata,
+                    ),
                     acquired_on=self.scene.acquired_on,
                     field_id=field.id,
                 )
@@ -142,11 +135,3 @@ class NdviStatisticsProcessor(BaseImageProcessor):
                 len(ndvi_values),
                 perf_counter() - agro_started,
             )
-
-    @staticmethod
-    def _load_ndvi_array(path: str) -> np.ndarray | None:
-        """Загружает NDVI-растр как ``float32`` либо возвращает ``None``."""
-        if not os.path.exists(path):
-            return None
-        with open_raster(path) as dataset:
-            return dataset.ReadAsArray().astype(np.float32)

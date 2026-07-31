@@ -250,15 +250,15 @@ def run_spectral_index_smoke(root: Path) -> None:
         b04_file=str(b04),
         b08_file=str(b08),
     )
-    original_loader = processor._load_band
+    original_reader = processor._read_window
     loaded_paths = []
 
-    def counting_loader(path: str) -> np.ndarray:
-        """Запоминает каждое фактическое чтение спектрального канала."""
-        loaded_paths.append(path)
-        return original_loader(path)
+    def counting_reader(dataset, window) -> np.ndarray:
+        """Запоминает канал каждого фактического оконного чтения."""
+        loaded_paths.append(dataset.GetDescription())
+        return original_reader(dataset, window)
 
-    processor._load_band = counting_loader
+    processor._read_window = counting_reader
     processor.create(
         {
             "ndvi": str(ndvi_destination),
@@ -272,8 +272,15 @@ def run_spectral_index_smoke(root: Path) -> None:
         raise AssertionError("NDVI рассчитан неверно")
     if not np.allclose(ndwi, -1 / 7):
         raise AssertionError("NDWI рассчитан неверно")
-    if loaded_paths.count(str(b08)) != 1:
-        raise AssertionError("Общий канал B08 был прочитан повторно")
+    read_counts = {
+        path: loaded_paths.count(str(path))
+        for path in (b03, b04, b08)
+    }
+    if len(set(read_counts.values())) != 1:
+        raise AssertionError(
+            "Общий канал B08 был прочитан чаще вторичных каналов: "
+            f"{read_counts}"
+        )
 
 
 def run_crop_smoke(root: Path) -> None:

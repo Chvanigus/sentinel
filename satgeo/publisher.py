@@ -118,6 +118,13 @@ class PublicationPlanner:
 class PostgisPublicationRepository:
     """PostGIS-адаптер publication persistence port."""
 
+    def __init__(self) -> None:
+        """Создаёт кэш неизменных границ хозяйств одного запуска."""
+        self._bounds: dict[
+            tuple[int, int, int],
+            tuple[float, float, float, float],
+        ] = {}
+
     def add_layer(self, layer: PublishedLayer) -> None:
         """Сохраняет сведения об опубликованном слое в PostGIS."""
         with psycopg2.connect(**get_database_config()) as connection:
@@ -129,13 +136,18 @@ class PostgisPublicationRepository:
             agroid: int,
             srid: int,
     ) -> tuple[float, float, float, float]:
-        """Читает границы хозяйства из PostGIS."""
+        """Читает и кеширует границы хозяйства из PostGIS."""
+        key = (year, agroid, srid)
+        if key in self._bounds:
+            return self._bounds[key]
         with psycopg2.connect(**get_database_config()) as connection:
-            return FieldRepository(SqlGateway(connection)).bounds(
+            bounds = FieldRepository(SqlGateway(connection)).bounds(
                 srid=srid,
                 year=year,
                 agroid=agroid,
             )
+        self._bounds[key] = bounds
+        return bounds
 
 
 class RasterPublisher:

@@ -29,7 +29,7 @@ def normalized_difference(
         )
 
     valid = np.isfinite(result) & (result != nodata)
-    result[valid] = np.clip(result[valid], -1.0, 1.0)
+    np.clip(result, -1.0, 1.0, out=result, where=valid)
     result[~np.isfinite(result)] = nodata
     return result
 

@@ -122,7 +122,14 @@ class ODataProductDownloader:
         zip_path = self.build_zip_path(target_dir, product)
 
         if zip_path.exists():
-            return zip_path
+            if zipfile.is_zipfile(zip_path):
+                return zip_path
+            damaged = zip_path.with_suffix(zip_path.suffix + ".corrupt")
+            logger.warning(
+                "Повреждённый архив перемещён в %s; запускается повторная загрузка",
+                damaged,
+            )
+            os.replace(zip_path, damaged)
 
         tmp_file = target_dir / f"{product.archive_name}.tmp"
 

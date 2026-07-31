@@ -1,4 +1,6 @@
-"""Тесты вычисления и записи спектральных индексов."""
+"""Тесты блочного вычисления спектральных индексов."""
+
+from contextlib import nullcontext
 
 import numpy as np
 import pytest
@@ -6,53 +8,102 @@ import pytest
 from processing.indexes import SpectralIndexProcessor
 
 
-class RecordingWriter:
-    """Запоминает параметры и массивы вместо записи растра через GDAL."""
+class InputBand:
+    """Имитирует один исходный канал и записывает прочитанные окна."""
 
-    writes = []
+    def __init__(self, array):
+        self.array = np.asarray(array)
+        self.reads = []
 
-    def __init__(self, *, destination, source, nodata):
-        """Сохраняет метаданные будущего выходного растра."""
-        self.destination = destination
-        self.source = source
-        self.nodata = nodata
+    def GetBlockSize(self):
+        """Возвращает маленький блок для проверки оконного режима."""
+        return 1, 1
 
-    def write(self, array):
-        """Запоминает копию записываемого массива."""
-        self.writes.append(
-            {
-                "destination": self.destination,
-                "source": self.source,
-                "nodata": self.nodata,
-                "array": array.copy(),
-            }
-        )
+    def ReadAsArray(self, x_offset, y_offset, width, height):
+        """Возвращает запрошенное окно исходного массива."""
+        window = (x_offset, y_offset, width, height)
+        self.reads.append(window)
+        return self.array[
+            y_offset:y_offset + height,
+            x_offset:x_offset + width,
+        ]
 
 
-def test_create_reuses_b08_for_ndvi_and_ndwi(monkeypatch):
-    """Оба индекса читают общий B08 только один раз."""
-    bands = {
-        "b03.jp2": np.array([[2.0, 8.0]]),
-        "b04.jp2": np.array([[2.0, 4.0]]),
-        "b08.jp2": np.array([[8.0, 4.0]]),
+class InputDataset:
+    """Минимальный исходный dataset с общей тестовой сеткой."""
+
+    def __init__(self, array):
+        self.band = InputBand(array)
+        self.RasterYSize, self.RasterXSize = self.band.array.shape
+
+    def GetRasterBand(self, _number):
+        """Возвращает единственный канал."""
+        return self.band
+
+    def GetGeoTransform(self):
+        """Возвращает общую тестовую геопривязку."""
+        return 0.0, 10.0, 0.0, 20.0, 0.0, -10.0
+
+    def GetProjection(self):
+        """Возвращает общую тестовую проекцию."""
+        return "EPSG:3857"
+
+
+class OutputBand:
+    """Собирает блочные записи в единый результирующий массив."""
+
+    def __init__(self, shape):
+        self.array = np.empty(shape, dtype=np.float32)
+        self.writes = []
+
+    def WriteArray(self, array, x_offset, y_offset):
+        """Записывает массив в указанное окно результата."""
+        height, width = array.shape
+        self.array[
+            y_offset:y_offset + height,
+            x_offset:x_offset + width,
+        ] = array
+        self.writes.append((x_offset, y_offset, width, height))
+
+
+class OutputDataset:
+    """Минимальный выходной dataset."""
+
+    def __init__(self, shape):
+        self.band = OutputBand(shape)
+
+    def GetRasterBand(self, _number):
+        """Возвращает единственный выходной канал."""
+        return self.band
+
+
+def configure_rasters(monkeypatch):
+    """Подменяет GDAL datasets детерминированными тестовыми объектами."""
+    inputs = {
+        "b03.jp2": InputDataset([[2.0, 8.0]]),
+        "b04.jp2": InputDataset([[2.0, 4.0]]),
+        "b08.jp2": InputDataset([[8.0, 4.0]]),
     }
-    reads = []
+    outputs = {}
 
-    def load_band(path):
-        """Возвращает тестовый канал и фиксирует обращение к нему."""
-        reads.append(path)
-        return bands[path]
+    monkeypatch.setattr(
+        "processing.indexes.open_raster",
+        lambda path: nullcontext(inputs[path]),
+    )
 
-    RecordingWriter.writes = []
-    monkeypatch.setattr(
-        SpectralIndexProcessor,
-        "_load_band",
-        staticmethod(load_band),
-    )
-    monkeypatch.setattr(
-        "processing.indexes.RasterArrayWriter",
-        RecordingWriter,
-    )
+    def create(_source, destination, **_options):
+        """Создаёт выходной dataset для указанного индекса."""
+        output = OutputDataset((1, 2))
+        outputs[destination] = output
+        return nullcontext(output)
+
+    monkeypatch.setattr("processing.indexes.create_raster_like", create)
+    return inputs, outputs
+
+
+def test_create_processes_blocks_and_reuses_b08(monkeypatch):
+    """Оба индекса используют одно чтение B08 на каждое окно."""
+    inputs, outputs = configure_rasters(monkeypatch)
     processor = SpectralIndexProcessor(
         b03_file="b03.jp2",
         b04_file="b04.jp2",
@@ -60,56 +111,45 @@ def test_create_reuses_b08_for_ndvi_and_ndwi(monkeypatch):
         nodata=-42.0,
     )
 
-    processor.create(
-        {
-            "ndvi": "ndvi.tif",
-            "ndwi": "ndwi.tif",
-        }
-    )
+    processor.create({"ndvi": "ndvi.tif", "ndwi": "ndwi.tif"})
 
-    assert reads == ["b08.jp2", "b04.jp2", "b03.jp2"]
-    assert [item["destination"] for item in RecordingWriter.writes] == [
-        "ndvi.tif",
-        "ndwi.tif",
-    ]
-    assert [item["source"] for item in RecordingWriter.writes] == [
-        "b08.jp2",
-        "b03.jp2",
-    ]
-    assert all(item["nodata"] == -42.0 for item in RecordingWriter.writes)
+    expected_windows = [(0, 0, 1, 1), (1, 0, 1, 1)]
+    assert inputs["b08.jp2"].band.reads == expected_windows
+    assert inputs["b04.jp2"].band.reads == expected_windows
+    assert inputs["b03.jp2"].band.reads == expected_windows
+    assert outputs["ndvi.tif"].band.writes == expected_windows
+    assert outputs["ndwi.tif"].band.writes == expected_windows
     np.testing.assert_allclose(
-        RecordingWriter.writes[0]["array"],
+        outputs["ndvi.tif"].band.array,
         [[0.6, 0.0]],
     )
     np.testing.assert_allclose(
-        RecordingWriter.writes[1]["array"],
+        outputs["ndwi.tif"].band.array,
         [[-0.6, 1.0 / 3.0]],
     )
 
 
-def test_create_returns_without_reading_for_empty_outputs(monkeypatch):
+def test_create_returns_without_opening_for_empty_outputs(monkeypatch):
     """Пустой набор результатов не открывает исходные растры."""
-    processor = SpectralIndexProcessor(b08_file="b08.jp2")
     monkeypatch.setattr(
-        processor,
-        "_load_band",
+        "processing.indexes.open_raster",
         lambda _path: pytest.fail("Исходники не должны читаться"),
     )
 
-    processor.create({})
+    SpectralIndexProcessor(b08_file="b08.jp2").create({})
 
 
-def test_create_rejects_unknown_index_before_reading(monkeypatch):
+def test_create_rejects_unknown_index_before_opening(monkeypatch):
     """Неизвестный индекс отклоняется до открытия исходных файлов."""
-    processor = SpectralIndexProcessor(b08_file="b08.jp2")
     monkeypatch.setattr(
-        processor,
-        "_load_band",
+        "processing.indexes.open_raster",
         lambda _path: pytest.fail("Исходники не должны читаться"),
     )
 
     with pytest.raises(ValueError, match="Неподдерживаемые"):
-        processor.create({"evi": "evi.tif"})
+        SpectralIndexProcessor(b08_file="b08.jp2").create(
+            {"evi": "evi.tif"}
+        )
 
 
 @pytest.mark.parametrize(
@@ -121,12 +161,10 @@ def test_create_rejects_unknown_index_before_reading(monkeypatch):
 )
 def test_create_requires_secondary_band(outputs, message, monkeypatch):
     """Для выбранного индекса обязательно задаётся его второй канал."""
-    processor = SpectralIndexProcessor(b08_file="b08.jp2")
     monkeypatch.setattr(
-        processor,
-        "_load_band",
-        lambda _path: np.ones((1, 1), dtype=np.float32),
+        "processing.indexes.open_raster",
+        lambda _path: pytest.fail("Исходники не должны читаться"),
     )
 
     with pytest.raises(ValueError, match=message):
-        processor.create(outputs)
+        SpectralIndexProcessor(b08_file="b08.jp2").create(outputs)

@@ -3,6 +3,7 @@ import os
 
 from osgeo import gdal
 
+from processing.dataset import atomic_raster_path
 from processing.domain import ProductLevel
 from processing.processors.base import BaseImageProcessor
 
@@ -57,20 +58,25 @@ class MosaicProcessor(BaseImageProcessor):
                     f"за {self.scene.date_label}"
                 )
             try:
-                result = gdal.Translate(
-                    dst,
-                    vrt,
-                    xRes=size,
-                    yRes=size,
-                    format="GTiff",
-                )
-                if result is None:
-                    raise RuntimeError(
-                        f"Не удалось объединить {prod} "
-                        f"для {self.scene.date_label}"
+                with atomic_raster_path(dst) as temporary:
+                    result = gdal.Translate(
+                        temporary,
+                        vrt,
+                        xRes=size,
+                        yRes=size,
+                        format="GTiff",
+                        creationOptions=[
+                            "TILED=YES",
+                            "BIGTIFF=IF_SAFER",
+                        ],
                     )
-                result.FlushCache()
-                result = None
+                    if result is None:
+                        raise RuntimeError(
+                            f"Не удалось объединить {prod} "
+                            f"для {self.scene.date_label}"
+                        )
+                    result.FlushCache()
+                    result = None
             finally:
                 vrt = None
                 gdal.Unlink(vrt_path)

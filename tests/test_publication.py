@@ -6,7 +6,12 @@ from datetime import date
 import pytest
 
 from core.logging import get_logger
-from satgeo.publisher import PublicationPlanner, RasterPublisher
+from satgeo import publisher as publisher_module
+from satgeo.publisher import (
+    PostgisPublicationRepository,
+    PublicationPlanner,
+    RasterPublisher,
+)
 
 
 def test_publish_date_raises_when_a_file_was_not_published(
@@ -83,3 +88,48 @@ def test_publication_planner_builds_host_and_container_paths(tmp_path):
         "/opt/geoserver_data/geoware/2026/a3/ndvi/07/"
         "a3_ndvi_2026-07-01.tif"
     )
+
+
+def test_postgis_repository_caches_repeated_agro_bounds(monkeypatch):
+    """Три слоя хозяйства используют один запрос его неизменных границ."""
+    calls = []
+
+    class Connection:
+        """Минимальный context manager подключения."""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Repository:
+        """Фиксирует чтение границ."""
+
+        def __init__(self, _gateway):
+            pass
+
+        def bounds(self, **parameters):
+            """Возвращает и фиксирует тестовые границы."""
+            calls.append(parameters)
+            return 1.0, 2.0, 3.0, 4.0
+
+    monkeypatch.setattr(
+        publisher_module.psycopg2,
+        "connect",
+        lambda **_options: Connection(),
+    )
+    monkeypatch.setattr(
+        publisher_module,
+        "get_database_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(publisher_module, "SqlGateway", lambda value: value)
+    monkeypatch.setattr(publisher_module, "FieldRepository", Repository)
+    repository = PostgisPublicationRepository()
+
+    first = repository.bounds(year=2026, agroid=3, srid=3857)
+    second = repository.bounds(year=2026, agroid=3, srid=3857)
+
+    assert first == second == (1.0, 2.0, 3.0, 4.0)
+    assert calls == [{"srid": 3857, "year": 2026, "agroid": 3}]

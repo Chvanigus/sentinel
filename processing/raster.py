@@ -1,74 +1,98 @@
-"""Атомарные операции над растрами GDAL."""
+"""Атомарные операции преобразования и вырезки растров GDAL."""
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from osgeo import gdal
 
+from processing.dataset import atomic_raster_path, open_raster
 
-class RasterProcessor:
-    """Translate и clip одного исходного растра."""
+TRANSLATE_OPTIONS = (
+    "TILED=YES",
+    "COMPRESS=DEFLATE",
+    "PREDICTOR=2",
+    "BIGTIFF=IF_SAFER",
+    "NUM_THREADS=ALL_CPUS",
+)
+WARP_OPTIONS = ("CUTLINE_ALL_TOUCHED=TRUE", "NUM_THREADS=ALL_CPUS")
 
-    def __init__(
-            self,
-            source: str | Path,
-            destination: str | Path,
-            output_format: str = "GTiff",
-    ):
-        self.source_path = Path(source)
-        self.destination = Path(destination)
-        self.output_format = output_format
-        self.source = gdal.Open(str(self.source_path))
-        if self.source is None:
-            raise FileNotFoundError(
-                f"Не удалось открыть растровый файл: {self.source_path}"
-            )
 
-    def clip_by_mask(
-            self,
-            mask: str | Path,
-            x_resolution: float | None = None,
-            y_resolution: float | None = None,
-    ) -> None:
-        """Обрезает растр по векторной маске с сохранением его проекции."""
-        if x_resolution is None or y_resolution is None:
-            transform = self.source.GetGeoTransform()
-            x_resolution = abs(transform[1])
-            y_resolution = abs(transform[5])
+def _resolution(
+        source,
+        x_resolution: float | None,
+        y_resolution: float | None,
+) -> tuple[float, float]:
+    """Возвращает явно заданное или исходное разрешение растра."""
+    if x_resolution is None or y_resolution is None:
+        transform = source.GetGeoTransform()
+        x_resolution = abs(transform[1])
+        y_resolution = abs(transform[5])
+    return x_resolution, y_resolution
 
-        self.destination.unlink(missing_ok=True)
+
+def translate_to_geotiff(
+        source: str | Path,
+        destination: str | Path,
+) -> None:
+    """Переводит растр в тайловый GeoTIFF, сохраняя исходный тип данных."""
+    with open_raster(source) as dataset, atomic_raster_path(
+            destination
+    ) as temporary:
+        result = gdal.Translate(
+            destName=temporary,
+            srcDS=dataset,
+            options=gdal.TranslateOptions(
+                format="GTiff",
+                creationOptions=list(TRANSLATE_OPTIONS),
+            ),
+        )
+        if result is None:
+            raise RuntimeError(f"GDAL не смог конвертировать {source}")
+        result.FlushCache()
+        result = None
+
+
+def clip_by_mask_array(
+        source: str | Path,
+        mask: str | Path,
+        *,
+        x_resolution: float | None = None,
+        y_resolution: float | None = None,
+        nodata: float | None = None,
+) -> np.ndarray:
+    """Обрезает растр в памяти и возвращает массив без временного TIFF."""
+    with open_raster(source) as dataset:
+        x_resolution, y_resolution = _resolution(
+            dataset,
+            x_resolution,
+            y_resolution,
+        )
         result = gdal.Warp(
-            str(self.destination),
-            self.source,
-            format=self.output_format,
+            "",
+            dataset,
+            format="MEM",
             cutlineDSName=str(mask),
             cropToCutline=True,
             xRes=x_resolution,
             yRes=y_resolution,
-            dstSRS=self.source.GetProjection(),
+            dstSRS=dataset.GetProjection(),
+            srcNodata=nodata,
+            dstNodata=nodata,
             multithread=True,
-            warpOptions=["CUTLINE_ALL_TOUCHED=TRUE"],
+            warpOptions=[
+                *WARP_OPTIONS,
+                "INIT_DEST=NO_DATA",
+            ],
         )
         if result is None:
-            raise RuntimeError(
-                f"GDAL не смог обрезать изображение {self.source_path}"
-            )
-        result.FlushCache()
-        result = None
-
-    def translate_to_geotiff(self) -> None:
-        """Конвертирует формат, сохраняя исходную систему координат."""
-        result = gdal.Translate(
-            destName=str(self.destination),
-            srcDS=self.source,
-            options=gdal.TranslateOptions(
-                format=self.output_format,
-                outputType=gdal.GDT_Int16,
-            ),
-        )
-        if result is None:
-            raise RuntimeError(
-                f"GDAL не смог конвертировать {self.source_path}"
-            )
-        result.FlushCache()
-        result = None
+            raise RuntimeError(f"GDAL не смог обрезать изображение {source}")
+        try:
+            array = result.ReadAsArray()
+            if array is None:
+                raise RuntimeError(
+                    f"GDAL не смог прочитать вырезанный растр {source}"
+                )
+            return np.asarray(array, dtype=np.float32)
+        finally:
+            result = None

@@ -211,8 +211,8 @@ def test_cloud_mask_paths_form_complete_processing_contract(tmp_path):
     )
 
 
-def test_statistics_paths_form_field_temporary_files(tmp_path):
-    """Пути статистики формируют согласованные имена маски и растра."""
+def test_statistics_paths_form_field_mask(tmp_path):
+    """Пути статистики формируют согласованное имя временной маски."""
     current_workspace = workspace(tmp_path)
     paths = NdviStatisticsPaths(
         scene(ProductLevel.L2A),
@@ -222,10 +222,6 @@ def test_statistics_paths_form_field_temporary_files(tmp_path):
     assert Path(paths.field_geojson(3, "42")) == (
         current_workspace.ndvi
         / "A3_01_07_2026_FIELD42.geojson"
-    )
-    assert Path(paths.field_ndvi_tif(3, "42")) == (
-        current_workspace.ndvi
-        / "A3_01_07_2026_FIELD42_ndvi.tif"
     )
 
 

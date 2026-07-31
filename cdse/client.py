@@ -82,6 +82,7 @@ class CdseODataClient:
             raise CdseQueryError(f"HTTP ошибка {method} {url}: {exc}") from exc
 
         if response.status_code == 401 and authorized and retry_auth:
+            response.close()
             headers[
                 "Authorization"] = f"Bearer {self.token_provider.get_token(force_refresh=True)}"
             try:
@@ -91,8 +92,12 @@ class CdseODataClient:
                     f"HTTP ошибка после refresh {method} {url}: {exc}") from exc
 
         if response.status_code >= 400:
+            status_code = response.status_code
+            response_text = response.text[:2000]
+            response.close()
             raise CdseQueryError(
-                f"CDSE HTTP {response.status_code} for {method} {url}: {response.text[:2000]}"
+                f"CDSE HTTP {status_code} for {method} {url}: "
+                f"{response_text}"
             )
 
         return response

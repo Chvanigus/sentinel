@@ -12,7 +12,7 @@ from processing.processors.ndvistat import NdviStatisticsProcessor
 
 
 class StatisticsPaths:
-    """Формирует изолированные пути NDVI, GeoJSON и полевых растров."""
+    """Формирует изолированные пути NDVI и GeoJSON."""
 
     def __init__(self, root: Path):
         """Сохраняет корень тестового рабочего пространства."""
@@ -25,10 +25,6 @@ class StatisticsPaths:
     def field_geojson(self, agroid: int, field_code: str) -> str:
         """Возвращает путь GeoJSON-маски поля."""
         return str(self.root / f"a{agroid}_{field_code}.geojson")
-
-    def field_ndvi_tif(self, agroid: int, field_code: str) -> str:
-        """Возвращает путь вырезанного полевого NDVI."""
-        return str(self.root / f"a{agroid}_{field_code}.tif")
 
 
 class RecordingFieldData:
@@ -79,22 +75,13 @@ class WritingGeometryExporter:
         return path
 
 
-class RecordingRasterProcessor:
-    """Имитирует вырезку NDVI по GeoJSON-маске."""
+RASTER_CLIPS = []
 
-    clips = []
 
-    def __init__(self, source, destination):
-        """Сохраняет пути исходного и выходного растра."""
-        self.source = source
-        self.destination = destination
-
-    def clip_by_mask(self, mask, **options):
-        """Фиксирует параметры вырезки и создаёт выходной файл."""
-        Path(self.destination).write_bytes(b"field-raster")
-        self.clips.append(
-            (self.source, self.destination, mask, options)
-        )
+def recording_clip(source, mask, **options):
+    """Фиксирует in-memory вырезку и возвращает тестовый NDVI."""
+    RASTER_CLIPS.append((source, mask, options))
+    return np.array([[0.5]], dtype=np.float32)
 
 
 class RecordingAnalyzer:
@@ -147,10 +134,10 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     )
     exporter = WritingGeometryExporter()
     analyzer = RecordingAnalyzer()
-    RecordingRasterProcessor.clips = []
+    RASTER_CLIPS.clear()
     monkeypatch.setattr(
-        "processing.processors.ndvistat.RasterProcessor",
-        RecordingRasterProcessor,
+        "processing.processors.ndvistat.clip_by_mask_array",
+        recording_clip,
     )
     processor = NdviStatisticsProcessor(
         make_scene(),
@@ -160,11 +147,6 @@ def test_run_batches_missing_geometry_and_saves_statistics(
         nodata=-9999.0,
     )
     processor.analyzer = analyzer
-    monkeypatch.setattr(
-        processor,
-        "_load_ndvi_array",
-        lambda _path: np.array([[0.5]], dtype=np.float32),
-    )
 
     processor.run()
 
@@ -182,7 +164,26 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     assert exporter.exports == [
         ("geometry-11", Path(paths.field_geojson(3, "11")))
     ]
-    assert len(RecordingRasterProcessor.clips) == 2
+    assert RASTER_CLIPS == [
+        (
+            paths.ndvi_source(3),
+            paths.field_geojson(3, "10"),
+            {
+                "x_resolution": 10,
+                "y_resolution": 10,
+                "nodata": -9999.0,
+            },
+        ),
+        (
+            paths.ndvi_source(3),
+            paths.field_geojson(3, "11"),
+            {
+                "x_resolution": 10,
+                "y_resolution": 10,
+                "nodata": -9999.0,
+            },
+        ),
+    ]
     assert [call[2] for call in analyzer.calls] == [10, 11]
     assert len(field_data.added_values) == 1
     assert [

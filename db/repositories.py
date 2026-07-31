@@ -19,32 +19,18 @@ class LayerRepository:
     def __init__(self, gateway: SqlGateway):
         self.gateway = gateway
 
-    def exists(self, layer: PublishedLayer) -> bool:
-        """Проверяет наличие слоя с теми же датой, хозяйством и типом."""
-        query = """
-            SELECT 1
-            FROM gpgeo.maps_layer
-            WHERE date = %s AND agroid = %s AND set = %s
-            LIMIT 1
-        """
-        return self.gateway.row(
-            query,
-            (layer.acquired_on, layer.agroid, layer.product),
-        ) is not None
-
     def add(self, layer: PublishedLayer) -> None:
-        """Сохраняет слой, если он ещё не зарегистрирован."""
-        if not self.exists(layer):
-            self.gateway.insert_one(
-                LayerRecord,
-                LayerRecord(
-                    date=layer.acquired_on,
-                    set=layer.product,
-                    agroid=layer.agroid,
-                    name=layer.name,
-                ),
-                conflict_fields="name",
-            )
+        """Сохраняет слой одной идемпотентной вставкой ``ON CONFLICT``."""
+        self.gateway.insert_one(
+            LayerRecord,
+            LayerRecord(
+                date=layer.acquired_on,
+                set=layer.product,
+                agroid=layer.agroid,
+                name=layer.name,
+            ),
+            conflict_fields="name",
+        )
 
     def missing_agroids(self, acquired_on: date) -> list[int]:
         """Возвращает хозяйства без полного набора обязательных слоёв."""

@@ -5,7 +5,7 @@ from pathlib import Path
 from processing.domain import ProductLevel
 from processing.indexes import SpectralIndexProcessor
 from processing.processors.base import BaseImageProcessor
-from processing.raster import RasterProcessor
+from processing.raster import translate_to_geotiff
 
 
 class TileImageProcessor(BaseImageProcessor):
@@ -47,7 +47,7 @@ class TileImageProcessor(BaseImageProcessor):
                 self.output_archive.store(self.scene, dst, stage)
                 continue
 
-            RasterProcessor(src, dst).translate_to_geotiff()
+            translate_to_geotiff(src, dst)
             self.logger.info("%s готово: %s", stage.upper(), dst)
 
             self.output_archive.store(self.scene, dst, stage)

@@ -4,7 +4,13 @@ import os
 from osgeo import gdal
 
 from processing.calculations import apply_scl_mask
-from processing.dataset import RasterArrayWriter, open_raster
+from processing.dataset import (
+    atomic_raster_path,
+    create_raster_like,
+    ensure_same_grid,
+    iter_raster_windows,
+    open_raster,
+)
 from processing.processors.base import BaseImageProcessor
 
 
@@ -37,25 +43,33 @@ class RescaleSCLProcessor(BaseImageProcessor):
             with open_raster(ndvi_path) as ndvi_ds, open_raster(
                     scl_src
             ) as scl_ds:
-                result = gdal.Warp(
-                    scl_dst,
-                    scl_ds,
-                    format="GTiff",
-                    width=ndvi_ds.RasterXSize,
-                    height=ndvi_ds.RasterYSize,
-                    outputBounds=self._get_bounds_from_ds(ndvi_ds),
-                    outputBoundsSRS=ndvi_ds.GetProjection(),
-                    dstSRS=ndvi_ds.GetProjection(),
-                    resampleAlg=gdal.GRA_NearestNeighbour,
-                    multithread=True,
-                    warpOptions=["NUM_THREADS=ALL_CPUS"],
-                )
-                if result is None:
-                    raise RuntimeError(
-                        f"Не удалось ресемплировать SCL для агро {agroid}"
+                with atomic_raster_path(scl_dst) as temporary:
+                    result = gdal.Warp(
+                        temporary,
+                        scl_ds,
+                        format="GTiff",
+                        width=ndvi_ds.RasterXSize,
+                        height=ndvi_ds.RasterYSize,
+                        outputBounds=self._get_bounds_from_ds(ndvi_ds),
+                        outputBoundsSRS=ndvi_ds.GetProjection(),
+                        dstSRS=ndvi_ds.GetProjection(),
+                        resampleAlg=gdal.GRA_NearestNeighbour,
+                        multithread=True,
+                        warpOptions=["NUM_THREADS=ALL_CPUS"],
+                        creationOptions=[
+                            "TILED=YES",
+                            "COMPRESS=DEFLATE",
+                            "PREDICTOR=2",
+                            "NUM_THREADS=ALL_CPUS",
+                        ],
                     )
-                result.FlushCache()
-                result = None
+                    if result is None:
+                        raise RuntimeError(
+                            "Не удалось ресемплировать SCL "
+                            f"для агро {agroid}"
+                        )
+                    result.FlushCache()
+                    result = None
             self.logger.info("SCL ресемплирован до 10м: %s", scl_dst)
 
     @staticmethod
@@ -105,20 +119,32 @@ class FilterNDVIProcessor(BaseImageProcessor):
             with open_raster(ndvi_path) as ndvi_ds, open_raster(
                     scl_path
             ) as scl_ds:
-                ndvi_array = ndvi_ds.GetRasterBand(1).ReadAsArray()
-                scl_array = scl_ds.GetRasterBand(1).ReadAsArray()
-
-            filtered = apply_scl_mask(
-                ndvi_array,
-                scl_array,
-                valid_classes=self.VALID_SCL_VALUES,
-                nodata=self.options.nodata,
-            )
-
-            RasterArrayWriter(
-                source=ndvi_path,
-                destination=dst_ndvi,
-                nodata=self.options.nodata,
-            ).write(filtered)
+                ensure_same_grid(ndvi_ds, scl_ds, "SCL")
+                with create_raster_like(
+                        ndvi_ds,
+                        dst_ndvi,
+                        nodata=self.options.nodata,
+                ) as output:
+                    output_band = output.GetRasterBand(1)
+                    ndvi_band = ndvi_ds.GetRasterBand(1)
+                    scl_band = scl_ds.GetRasterBand(1)
+                    for window in iter_raster_windows(ndvi_ds):
+                        ndvi_array = ndvi_band.ReadAsArray(*window)
+                        scl_array = scl_band.ReadAsArray(*window)
+                        if ndvi_array is None or scl_array is None:
+                            raise RuntimeError(
+                                f"Не удалось прочитать блок {window}"
+                            )
+                        filtered = apply_scl_mask(
+                            ndvi_array,
+                            scl_array,
+                            valid_classes=self.VALID_SCL_VALUES,
+                            nodata=self.options.nodata,
+                        )
+                        output_band.WriteArray(
+                            filtered,
+                            window[0],
+                            window[1],
+                        )
 
             self.logger.info("NDVI отфильтрован для агро %s", agroid)

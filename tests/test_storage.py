@@ -1,5 +1,6 @@
 """Тесты безопасных файловых адаптеров processing."""
 
+import shutil
 from datetime import date
 from pathlib import Path
 
@@ -33,8 +34,8 @@ def test_clear_directory_contents_rejects_file(tmp_path):
         clear_directory_contents(target)
 
 
-def test_tile_archive_copies_result_to_date_hierarchy(tmp_path):
-    """Tile-level растр копируется в иерархию долговременного архива."""
+def test_tile_archive_stores_result_in_date_hierarchy(tmp_path):
+    """Tile-level растр сохраняется в иерархию долговременного архива."""
     source = tmp_path / "source.tif"
     source.write_bytes(b"raster")
     scene = SceneContext(
@@ -79,6 +80,43 @@ def test_tile_archive_does_not_recopy_identical_result(tmp_path, monkeypatch):
     )
 
     assert archive.store(scene, source, "ndvi") == destination
+
+
+def test_tile_archive_falls_back_to_atomic_copy(tmp_path, monkeypatch):
+    """Разные файловые разделы используют copy2 через временный файл."""
+    source = tmp_path / "source.tif"
+    source.write_bytes(b"raster")
+    scene = SceneContext(
+        archive_path=Path("scene.zip"),
+        tile="t38ula",
+        acquired_on=date(2026, 7, 1),
+        satellite="s2a",
+        level=ProductLevel.L2A,
+        agroids=(1, 3, 4),
+    )
+    copied_to = []
+    original_copy = shutil.copy2
+    monkeypatch.setattr(
+        "processing.storage.os.link",
+        lambda *_args: (_ for _ in ()).throw(OSError("cross-device")),
+    )
+
+    def recording_copy(source_path, destination_path):
+        """Запоминает fallback-копирование и выполняет его."""
+        copied_to.append(Path(destination_path))
+        return original_copy(source_path, destination_path)
+
+    monkeypatch.setattr("processing.storage.shutil.copy2", recording_copy)
+
+    destination = GeowareTileArchive(tmp_path / "geoware").store(
+        scene,
+        source,
+        "ndvi",
+    )
+
+    assert destination.read_bytes() == b"raster"
+    assert copied_to == [destination.with_suffix(".tif.partial")]
+    assert not copied_to[0].exists()
 
 
 def test_geometry_exporter_atomically_writes_geojson(tmp_path):
