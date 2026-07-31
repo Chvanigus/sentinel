@@ -44,6 +44,40 @@ def test_ndvi_repository_saves_one_batch():
     assert len(gateway.calls[0][0][1]) == 2
 
 
+def test_ndvi_repository_atomically_replaces_selected_fields():
+    """Полная замена удаляет старые строки до пакетной вставки."""
+
+    class Gateway:
+        """Фиксирует изменяющие запросы и пакетную вставку."""
+
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, query, params, **options):
+            """Запоминает удаление старой статистики."""
+            self.calls.append(("execute", query, params, options))
+
+        def insert_many(self, *args, **kwargs):
+            """Запоминает вставку пересчитанной статистики."""
+            self.calls.append(("insert_many", args, kwargs))
+
+    gateway = Gateway()
+
+    NdviRepository(gateway).replace_many(
+        [ndvi_value(2)],
+        field_ids=[2, 1, 2],
+        acquired_on=date(2026, 7, 1),
+    )
+
+    assert gateway.calls[0][0] == "execute"
+    assert gateway.calls[0][2] == (
+        date(2026, 7, 1),
+        [1, 2],
+    )
+    assert gateway.calls[0][3] == {"commit": False}
+    assert gateway.calls[1][0] == "insert_many"
+
+
 def test_ndvi_completeness_requires_every_field():
     """Статистика считается полной только при наличии каждого поля."""
 

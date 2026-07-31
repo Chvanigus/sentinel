@@ -13,7 +13,8 @@ PROCESS_RANGE += $(if $(strip $(YEAR)),--year $(YEAR))
 PROCESS_RANGE += $(if $(strip $(MONTH)),--month $(MONTH))
 PROCESS_DEBUG := $(if $(filter 1 true yes,$(strip $(DEBUG))),--debug)
 
-.PHONY: help check-env search download process process-debug test lint smoke deploy
+.PHONY: help check-env search download process process-debug recalculate-ndvi
+.PHONY: test lint smoke deploy
 .PHONY: install-systemd timer logs
 
 help:
@@ -28,6 +29,8 @@ help:
 	@echo "  make process START=... END=..."
 	@echo "  make process YEAR=2026 MONTH=7"
 	@echo "  make process DEBUG=1                Без очистки рабочих файлов"
+	@echo "  make recalculate-ndvi YEAR=2026     Полная замена NDVI за год"
+	@echo "  make recalculate-ndvi START=... END=..."
 	@echo "  make test | lint | smoke            Локальные проверки"
 	@echo "  make deploy                         Ручной deploy текущего checkout"
 	@echo "  make install-systemd                Установка ночного таймера"
@@ -48,6 +51,9 @@ process: check-env
 
 process-debug: check-env
 	$(MANAGE) processing $(PROCESS_RANGE) --debug
+
+recalculate-ndvi: check-env
+	$(MANAGE) processing $(PROCESS_RANGE) --recalculate-ndvi
 
 test:
 	$(PYTHON) -m pytest -q

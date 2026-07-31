@@ -49,9 +49,11 @@ class DefaultSceneArchiveProcessor:
             self,
             pipeline: ScenePipeline,
             temporary_root: str | Path,
+            ndvi_only: bool = False,
     ):
         self.pipeline = pipeline
         self.temporary_root = Path(temporary_root)
+        self.ndvi_only = ndvi_only
         self.logger = get_logger(self.__class__.__name__)
 
     def process(self, archive_path: Path) -> None:
@@ -63,9 +65,14 @@ class DefaultSceneArchiveProcessor:
         )
 
         extraction_started = perf_counter()
+        required_bands = scene.level.required_bands
+        if self.ndvi_only:
+            required_bands = ("B04", "B08")
+            if scene.level is ProductLevel.L2A:
+                required_bands += ("SCL",)
         extracted_path = archive.extract(
             self.temporary_root,
-            scene.level.required_bands,
+            required_bands,
         )
         self.logger.info(
             "EXTRACT OK: %s → %s | %.2f сек.",
@@ -90,7 +97,10 @@ class ProcessingWorkspaceCleaner:
         )
 
 
-def build_scene_pipeline() -> ScenePipeline:
+def build_scene_pipeline(
+        *,
+        recalculate_ndvi: bool = False,
+) -> ScenePipeline:
     """Создаёт pipeline, локализуя импорты тяжёлого GDAL-слоя."""
     from processing.processors.cloudmask import (
         FilterNDVIProcessor,
@@ -117,6 +127,11 @@ def build_scene_pipeline() -> ScenePipeline:
     field_data = PostgisFieldDataProvider()
     output_archive = GeowareTileArchive(workspace.geoware)
     geometry_exporter = FieldGeometryExporter()
+    selected_products = (
+        frozenset({"ndvi", "scl"})
+        if recalculate_ndvi
+        else None
+    )
 
     def process_tile(scene: SceneContext) -> None:
         """Строит tile-level растры и сохраняет долговременные результаты."""
@@ -131,6 +146,7 @@ def build_scene_pipeline() -> ScenePipeline:
             paths,
             output_archive,
             options,
+            products=selected_products,
         ).run()
 
     def process_agroids(scene: SceneContext) -> None:
@@ -141,6 +157,7 @@ def build_scene_pipeline() -> ScenePipeline:
             paths,
             field_data,
             options,
+            products=selected_products,
         ).run()
 
     def combine_tiles(scene: SceneContext) -> None:
@@ -148,6 +165,7 @@ def build_scene_pipeline() -> ScenePipeline:
         MosaicProcessor(
             scene,
             MosaicPaths(scene, workspace),
+            products=selected_products,
         ).run()
 
     def apply_cloud_mask(scene: SceneContext) -> None:
@@ -166,6 +184,7 @@ def build_scene_pipeline() -> ScenePipeline:
             field_data,
             geometry_exporter,
             options.nodata,
+            overwrite=recalculate_ndvi,
         ).run()
 
     return ScenePipeline(
@@ -179,7 +198,10 @@ def build_scene_pipeline() -> ScenePipeline:
     )
 
 
-def build_processing_service() -> ProcessingService:
+def build_processing_service(
+        *,
+        recalculate_ndvi: bool = False,
+) -> ProcessingService:
     """Composition root production-сценария обработки."""
     from satgeo.composition import build_raster_publisher
 
@@ -188,9 +210,16 @@ def build_processing_service() -> ProcessingService:
         pair_finder=ArchivePairFinder(),
         status_reader=PostgisProcessingStatusReader(),
         scene_processor=DefaultSceneArchiveProcessor(
-            build_scene_pipeline(),
+            build_scene_pipeline(
+                recalculate_ndvi=recalculate_ndvi,
+            ),
             settings.TEMP_PROCESSING_DIR,
+            ndvi_only=recalculate_ndvi,
         ),
-        publisher=build_raster_publisher(),
+        publisher=build_raster_publisher(
+            refresh_products={"ndvi"} if recalculate_ndvi else (),
+        ),
         cleaner=ProcessingWorkspaceCleaner(),
+        process_completed=recalculate_ndvi,
+        clean_before_each=recalculate_ndvi,
     )

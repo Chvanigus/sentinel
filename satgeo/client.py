@@ -189,9 +189,10 @@ class GeoServerClient:
             zoom_stop: int = 14,
             image_format: str = "image/png",
             threads: int = 4,
+            reseed: bool = False,
     ) -> bool:
         """
-        Прогрев тайлов GeoWebCache (seed), чтобы фронт сразу получал готовый кэш.
+        Прогревает либо принудительно обновляет тайлы GeoWebCache.
         """
         if zoom_start < 0 or zoom_stop < 0 or zoom_start > zoom_stop:
             raise ValueError("Неверный диапазон zoom_start/zoom_stop")
@@ -210,7 +211,7 @@ class GeoServerClient:
                   <gridSetId>WebMercatorQuad</gridSetId>
                   <zoomStart>{zoom_start}</zoomStart>
                   <zoomStop>{zoom_stop}</zoomStop>
-                  <type>seed</type>
+                  <type>{"reseed" if reseed else "seed"}</type>
                   <format>{image_format}</format>
                   <threadCount>{threads}</threadCount>
                   <metaWidthHeight>

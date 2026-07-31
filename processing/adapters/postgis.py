@@ -98,7 +98,22 @@ class PostgisFieldDataProvider:
             gateway = SqlGateway(connection)
             return NdviRepository(gateway).is_complete(fields, acquired_on)
 
-    def add_ndvi(self, values: list[NdviStatistics]) -> None:
-        """Сохраняет рассчитанную статистику NDVI."""
+    def save_ndvi(
+            self,
+            values: list[NdviStatistics],
+            *,
+            field_ids: list[int],
+            acquired_on: date,
+            overwrite: bool = False,
+    ) -> None:
+        """Сохраняет либо полностью заменяет рассчитанную статистику NDVI."""
         with psycopg2.connect(**get_database_config()) as connection:
-            NdviRepository(SqlGateway(connection)).add_many(values)
+            repository = NdviRepository(SqlGateway(connection))
+            if overwrite:
+                repository.replace_many(
+                    values,
+                    field_ids=field_ids,
+                    acquired_on=acquired_on,
+                )
+            else:
+                repository.add_many(values)

@@ -240,3 +240,38 @@ def test_l1c_raster_stage_does_not_request_scl(tmp_path):
     assert archive.stores == [
         (current_scene, str(result_paths["tci"]), "tci")
     ]
+
+
+def test_ndvi_only_mode_does_not_read_unrelated_l1c_bands(
+        tmp_path,
+        monkeypatch,
+):
+    """NDVI-перерасчёт L1C читает только красный и ближний ИК-каналы."""
+    result_paths = destinations(tmp_path)
+    paths = RecordingPaths(
+        result_paths,
+        {
+            "b04": ["b04.jp2"],
+            "b08": ["b08.jp2"],
+        },
+    )
+    archive = RecordingArchive()
+    RecordingIndexProcessor.initializations = []
+    RecordingIndexProcessor.creations = []
+    monkeypatch.setattr(
+        "processing.processors.tiles.SpectralIndexProcessor",
+        RecordingIndexProcessor,
+    )
+
+    TileImageProcessor(
+        make_scene(ProductLevel.L1C),
+        paths,
+        archive,
+        SimpleNamespace(nodata=-9999.0),
+        products={"ndvi", "scl"},
+    ).run()
+
+    assert paths.source_requests == ["b04", "b08"]
+    assert RecordingIndexProcessor.creations == [
+        {"ndvi": str(result_paths["ndvi"])}
+    ]

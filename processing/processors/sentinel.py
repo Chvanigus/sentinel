@@ -21,10 +21,14 @@ class AgroCropProcessor(BaseImageProcessor):
             paths,
             field_data: FieldDataProvider,
             options,
+            products=None,
     ):
         super().__init__(scene, paths)
         self.field_data = field_data
         self.options = options
+        self.products = frozenset(
+            products or {"tci", "ndvi", "ndwi", "scl"}
+        )
         self._agro_bounds_cache: dict[
             int,
             tuple[float, float, float, float],
@@ -36,9 +40,14 @@ class AgroCropProcessor(BaseImageProcessor):
 
     def run(self) -> None:
         """Обрабатывает все допустимые продукты каждого хозяйства сцены."""
-        warp_keys = ["tci", "ndvi", "ndwi"]
-        if self.scene.level is ProductLevel.L2A:
-            warp_keys.append("scl")
+        warp_keys = [
+            product
+            for product in ("tci", "ndvi", "ndwi", "scl")
+            if product in self.products and not (
+                product == "scl"
+                and self.scene.level is ProductLevel.L1C
+            )
+        ]
 
         sources = {}
         for stage in warp_keys:

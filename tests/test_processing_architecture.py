@@ -257,6 +257,70 @@ def test_processing_service_collects_failures_and_cleans_each_date():
     assert cleaner.calls == 2
 
 
+def test_recalculation_processes_completed_dates_and_cleans_before_work():
+    """Перерасчёт не доверяет статусу публикации и начинает с чистого workspace."""
+
+    class Finder:
+        """Возвращает одну завершённую пару."""
+
+        def find(self, _root):
+            """Возвращает тестовую пару."""
+            return [pair(1)]
+
+    class Status:
+        """Запрещает обращаться к статусу в принудительном режиме."""
+
+        def get_missing_agroids(self, _acquired_on):
+            """Сообщает о недопустимом вызове."""
+            raise AssertionError("Статус не должен ограничивать перерасчёт")
+
+    events = []
+
+    class Processor:
+        """Фиксирует обработку архивов."""
+
+        def process(self, archive):
+            """Добавляет архив в журнал."""
+            events.append(("process", archive))
+
+    class Publisher:
+        """Фиксирует публикацию даты."""
+
+        def publish_date(self, acquired_on):
+            """Добавляет публикацию в журнал."""
+            events.append(("publish", acquired_on))
+
+    class Cleaner:
+        """Фиксирует очистку до и после обработки."""
+
+        def clean(self):
+            """Добавляет очистку в журнал."""
+            events.append(("clean", None))
+
+    service = ProcessingService(
+        archive_root="/archive",
+        pair_finder=Finder(),
+        status_reader=Status(),
+        scene_processor=Processor(),
+        publisher=Publisher(),
+        cleaner=Cleaner(),
+        process_completed=True,
+        clean_before_each=True,
+    )
+
+    summary = service.run()
+
+    assert events == [
+        ("clean", None),
+        ("process", Path("1-ula.zip")),
+        ("process", Path("1-ulb.zip")),
+        ("publish", date(2026, 7, 1)),
+        ("clean", None),
+    ]
+    assert summary.processed == 1
+    assert summary.skipped == 0
+
+
 def test_application_modules_do_not_import_infrastructure():
     """Чистые application-модули не импортируют инфраструктурные пакеты."""
     root = Path(__file__).parents[1]

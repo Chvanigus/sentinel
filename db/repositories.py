@@ -112,9 +112,10 @@ class NdviRepository:
     def __init__(self, gateway: SqlGateway):
         self.gateway = gateway
 
-    def add_many(self, values: list[NdviStatistics]) -> None:
-        """Сохраняет пакет доменных значений статистики NDVI."""
-        rows = [
+    @staticmethod
+    def _rows(values: list[NdviStatistics]) -> list[tuple[Any, ...]]:
+        """Преобразует доменную статистику в строки persistence-модели."""
+        return [
             (
                 item.acquired_on,
                 item.field_id,
@@ -127,11 +128,50 @@ class NdviRepository:
             )
             for item in values
         ]
+
+    def add_many(self, values: list[NdviStatistics]) -> None:
+        """Сохраняет пакет доменных значений статистики NDVI."""
         self.gateway.insert_many(
             NdviRecord,
-            rows,
+            self._rows(values),
             conflict_fields="date, fieldid",
         )
+
+    def replace_many(
+            self,
+            values: list[NdviStatistics],
+            *,
+            field_ids: list[int],
+            acquired_on: date,
+    ) -> None:
+        """Атомарно заменяет статистику выбранных полей за одну дату."""
+        selected_ids = sorted(set(field_ids))
+        if not selected_ids:
+            return
+        if any(
+                item.acquired_on != acquired_on
+                or item.field_id not in selected_ids
+                for item in values
+        ):
+            raise ValueError(
+                "Заменяемые NDVI-значения не соответствуют дате или полям"
+            )
+
+        rows = self._rows(values)
+        self.gateway.execute(
+            """
+            DELETE FROM gpgeo.maps_ndvi_values
+            WHERE date = %s AND fieldid = ANY (%s)
+            """,
+            (acquired_on, selected_ids),
+            commit=not rows,
+        )
+        if rows:
+            self.gateway.insert_many(
+                NdviRecord,
+                rows,
+                conflict_fields="date, fieldid",
+            )
 
     def is_complete(
             self,

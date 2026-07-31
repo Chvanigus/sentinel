@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import date
 from pathlib import Path
 from typing import Protocol
@@ -60,6 +60,7 @@ class GeoServerCatalog(Protocol):
             self,
             layer_name: str,
             bbox: tuple[float, float, float, float],
+            reseed: bool = False,
             **kwargs,
     ) -> bool:
         """Запускает прогрев тайлов слоя в указанной области."""
@@ -162,6 +163,7 @@ class RasterPublisher:
             client: GeoServerCatalog,
             repository: PublicationRepository,
             optimizer: Callable[[Path, Path], None] = optimize_geotiff,
+            refresh_products: Iterable[str] = (),
     ):
         self.source_root = Path(source_root)
         self.workspace = workspace
@@ -170,13 +172,17 @@ class RasterPublisher:
         self.client = client
         self.repository = repository
         self.optimizer = optimizer
+        self.refresh_products = frozenset(
+            product.lower() for product in refresh_products
+        )
         self.logger = get_logger(self.__class__.__name__)
 
     def _publish_file(self, file_path: Path) -> tuple[bool, str]:
         """Оптимизирует, публикует и регистрирует один растровый файл."""
         plan = self.planner.build(file_path)
+        refresh = plan.info.img_type in self.refresh_products
         try:
-            if not plan.destination.exists():
+            if refresh or not plan.destination.exists():
                 self.optimizer(plan.source, plan.destination)
         except Exception as exc:
             self.logger.error(
@@ -210,7 +216,7 @@ class RasterPublisher:
         self.client.enable_gwc_gridset_3857(plan.layer_name)
 
         acquired_on = plan.info.date()
-        if self.current_year == acquired_on.year:
+        if refresh or self.current_year == acquired_on.year:
             bbox = self.repository.bounds(
                 year=acquired_on.year,
                 agroid=plan.info.agroid_number,
@@ -223,6 +229,7 @@ class RasterPublisher:
                 threads=4,
                 image_format="image/png",
                 bbox=bbox,
+                reseed=refresh,
             )
         return True, plan.layer_name
 

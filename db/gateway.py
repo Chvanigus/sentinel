@@ -113,6 +113,23 @@ class SqlGateway:
             self.logger.exception("Ошибка выполнения SQL-запроса")
             raise
 
+    def execute(
+            self,
+            query: str,
+            params: tuple[Any, ...] | None = None,
+            *,
+            commit: bool = True,
+    ) -> None:
+        """Выполняет изменяющий запрос с управляемой фиксацией транзакции."""
+        try:
+            self.cursor.execute(query, params)
+            if commit:
+                self.connection.commit()
+        except psycopg2.Error:
+            self.connection.rollback()
+            self.logger.exception("Ошибка изменяющего SQL-запроса")
+            raise
+
     def tuples_for_insert(
             self,
             record_type: type[Any],

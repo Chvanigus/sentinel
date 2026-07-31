@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cli.commands.processing import Command as ProcessingCommand
 from cli.commands.processing import resolve_date_range
 from core import settings
 from core.management.base import BaseCommand
@@ -72,6 +73,21 @@ def test_processing_rejects_ambiguous_or_invalid_range(kwargs):
     """Противоречивые и обратные диапазоны дат отклоняются."""
     with pytest.raises(ValueError):
         resolve_date_range(**kwargs)
+
+
+def test_ndvi_recalculation_requires_explicit_period(monkeypatch):
+    """Разрушающий перерасчёт нельзя случайно запустить на весь архив."""
+    command = ProcessingCommand()
+
+    with pytest.raises(ValueError, match="укажите --year либо --start"):
+        command.handle(
+            debug=False,
+            recalculate_ndvi=True,
+            year=None,
+            month=None,
+            start=None,
+            end=None,
+        )
 
 
 def test_management_help_discovers_commands():

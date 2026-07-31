@@ -56,6 +56,8 @@ class ProcessingService:
             scene_processor: SceneArchiveProcessor,
             publisher: ResultPublisher,
             cleaner: WorkspaceCleaner,
+            process_completed: bool = False,
+            clean_before_each: bool = False,
     ):
         self.archive_root = Path(archive_root)
         self.pair_finder = pair_finder
@@ -63,6 +65,8 @@ class ProcessingService:
         self.scene_processor = scene_processor
         self.publisher = publisher
         self.cleaner = cleaner
+        self.process_completed = process_completed
+        self.clean_before_each = clean_before_each
         self.logger = get_logger(self.__class__.__name__)
 
     def run(
@@ -91,7 +95,7 @@ class ProcessingService:
             if end_date and acquired_at >= end_date:
                 continue
 
-            if not debug:
+            if not debug and not self.process_completed:
                 missing = self.status_reader.get_missing_agroids(
                     pair.acquired_on
                 )
@@ -106,6 +110,11 @@ class ProcessingService:
                     "PROCESS %s → нет агро: %s",
                     pair.acquired_on,
                     ", ".join(map(str, missing)),
+                )
+            elif self.process_completed:
+                self.logger.info(
+                    "RECALCULATE %s → принудительная обработка NDVI",
+                    pair.acquired_on,
                 )
 
             selected.append(pair)
@@ -122,6 +131,14 @@ class ProcessingService:
                 date_label,
             )
             try:
+                if self.clean_before_each:
+                    cleanup_started = perf_counter()
+                    self.cleaner.clean()
+                    self.logger.info(
+                        "PRE-CLEANUP OK: %s | %.2f сек.",
+                        date_label,
+                        perf_counter() - cleanup_started,
+                    )
                 for archive in pair.archives:
                     archive_started = perf_counter()
                     self.logger.info(

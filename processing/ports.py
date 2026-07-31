@@ -43,6 +43,13 @@ class FieldDataProvider(Protocol):
         """Проверяет полноту статистики хозяйства за дату."""
         ...
 
-    def add_ndvi(self, values: list[NdviStatistics]) -> None:
-        """Сохраняет рассчитанную статистику NDVI."""
+    def save_ndvi(
+            self,
+            values: list[NdviStatistics],
+            *,
+            field_ids: list[int],
+            acquired_on: date,
+            overwrite: bool = False,
+    ) -> None:
+        """Сохраняет либо полностью заменяет статистику выбранных полей."""
         ...

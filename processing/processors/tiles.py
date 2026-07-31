@@ -11,10 +11,25 @@ from processing.raster import translate_to_geotiff
 class TileImageProcessor(BaseImageProcessor):
     """Создаёт tile-level TCI, NDVI и NDWI из каналов Sentinel."""
 
-    def __init__(self, scene, paths, output_archive, options):
+    PRODUCTS = frozenset({"tci", "scl", "ndvi", "ndwi"})
+
+    def __init__(
+            self,
+            scene,
+            paths,
+            output_archive,
+            options,
+            products=None,
+    ):
         super().__init__(scene, paths)
         self.output_archive = output_archive
         self.options = options
+        self.products = frozenset(products or self.PRODUCTS)
+        unknown = self.products - self.PRODUCTS
+        if unknown:
+            raise ValueError(
+                "Неизвестные tile-продукты: " + ", ".join(sorted(unknown))
+            )
 
     def run(self) -> None:
         """Готовит цветной растр и рассчитывает спектральные индексы тайла."""
@@ -26,9 +41,13 @@ class TileImageProcessor(BaseImageProcessor):
 
     def _process_raster_stages(self) -> None:
         """Подготовка TCI (10m) и SCL (20m) из JP2 → projection_raster."""
-        stages = ["tci"]
-        if self.scene.level is ProductLevel.L2A:
-            stages.append("scl")
+        stages = [
+            stage
+            for stage in ("tci", "scl")
+            if stage in self.products and not (
+                stage == "scl" and self.scene.level is ProductLevel.L1C
+            )
+        ]
 
         for stage in stages:
             stage_sources = self.paths.sources(stage)
@@ -56,6 +75,8 @@ class TileImageProcessor(BaseImageProcessor):
         """Создаёт отсутствующие NDVI/NDWI с однократным чтением B08."""
         outputs = {}
         for product in ("ndvi", "ndwi"):
+            if product not in self.products:
+                continue
             destination = self.paths.destination(product)
             if os.path.exists(destination):
                 self.logger.info("%s уже есть, пропуск", product.upper())

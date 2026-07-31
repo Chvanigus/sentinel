@@ -1,4 +1,5 @@
 """Сборка production-зависимостей публикации."""
+from collections.abc import Iterable
 
 from core import settings
 
@@ -10,7 +11,10 @@ from .publisher import (
 )
 
 
-def build_raster_publisher() -> RasterPublisher:
+def build_raster_publisher(
+        *,
+        refresh_products: Iterable[str] = (),
+) -> RasterPublisher:
     """Собирает production-сервис публикации из настроек окружения."""
     return RasterPublisher(
         source_root=settings.PROCESSED_DIR,
@@ -29,4 +33,5 @@ def build_raster_publisher() -> RasterPublisher:
             )
         ),
         repository=PostgisPublicationRepository(),
+        refresh_products=refresh_products,
     )

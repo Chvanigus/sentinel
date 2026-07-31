@@ -38,7 +38,7 @@ jobs:
       - name: Validate operational scripts
         run: |
           bash -n deploy/deploy.sh
-          make -n search download process deploy
+          make -n search download process recalculate-ndvi deploy
 
   deploy:
     name: Deploy production

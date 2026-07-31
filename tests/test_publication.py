@@ -133,3 +133,63 @@ def test_postgis_repository_caches_repeated_agro_bounds(monkeypatch):
 
     assert first == second == (1.0, 2.0, 3.0, 4.0)
     assert calls == [{"srid": 3857, "year": 2026, "agroid": 3}]
+
+
+def test_refresh_product_overwrites_cog_and_reseeds_cache(tmp_path):
+    """Перерасчёт NDVI заменяет опубликованный COG и обновляет GWC-кэш."""
+    source = tmp_path / "s2a_01_07_2026_a3_ndvi_10m_3857.tif"
+    source.write_bytes(b"new")
+    planner = PublicationPlanner(
+        tmp_path / "geoware",
+        "/opt/geoserver_data/geoware",
+    )
+    destination = planner.build(source).destination
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"old")
+    optimized = []
+    seed_calls = []
+
+    class Client:
+        """Фиксирует операции GeoServer и GWC."""
+
+        def create_coveragestore(self, **_options):
+            """Имитирует идемпотентную публикацию."""
+
+        def set_layer_style(self, *_args):
+            """Имитирует установку стиля."""
+
+        def enable_gwc_gridset_3857(self, _layer_name):
+            """Имитирует включение gridset."""
+            return True
+
+        def seed_gwc_cache(self, **options):
+            """Запоминает режим обновления кэша."""
+            seed_calls.append(options)
+            return True
+
+    class Repository:
+        """Имитирует persistence публикации."""
+
+        def add_layer(self, _layer):
+            """Имитирует сохранение слоя."""
+
+        def bounds(self, **_options):
+            """Возвращает валидные границы хозяйства."""
+            return 1.0, 2.0, 3.0, 4.0
+
+    publisher = RasterPublisher(
+        source_root=tmp_path,
+        workspace="sentinel",
+        current_year=2027,
+        planner=planner,
+        client=Client(),
+        repository=Repository(),
+        optimizer=lambda src, dst: optimized.append((src, dst)),
+        refresh_products={"ndvi"},
+    )
+
+    success, _layer_name = publisher._publish_file(source)
+
+    assert success is True
+    assert optimized == [(source, destination)]
+    assert seed_calls[0]["reseed"] is True

@@ -21,11 +21,26 @@ class MosaicProcessor(BaseImageProcessor):
         "scl": 20,
     }
 
+    def __init__(self, scene, paths, products=None):
+        super().__init__(scene, paths)
+        self.products = frozenset(products or self.PRODUCT_SIZES)
+        unknown = self.products - self.PRODUCT_SIZES.keys()
+        if unknown:
+            raise ValueError(
+                "Неизвестные продукты мозаики: "
+                + ", ".join(sorted(unknown))
+            )
+
     def run(self) -> None:
         """Объединяет доступные пары тайлов каждого продукта в GeoTIFF."""
-        products = ["tci", "ndvi", "ndwi"]
-        if self.scene.level is ProductLevel.L2A:
-            products.append("scl")
+        products = [
+            product
+            for product in ("tci", "ndvi", "ndwi", "scl")
+            if product in self.products and not (
+                product == "scl"
+                and self.scene.level is ProductLevel.L1C
+            )
+        ]
 
         for prod in products:
             size = self.PRODUCT_SIZES[prod]

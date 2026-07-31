@@ -38,7 +38,7 @@ class RecordingFieldData:
         self.complete_calls = []
         self.field_calls = []
         self.geometry_calls = []
-        self.added_values = []
+        self.saved_values = []
 
     def ndvi_is_complete(self, **parameters):
         """Возвращает признак завершённости и фиксирует параметры."""
@@ -55,9 +55,9 @@ class RecordingFieldData:
         self.geometry_calls.append(parameters)
         return self.geometry_values
 
-    def add_ndvi(self, values):
-        """Запоминает пакет сохраняемой NDVI-статистики."""
-        self.added_values.append(values)
+    def save_ndvi(self, values, **options):
+        """Запоминает пакет и режим сохранения NDVI-статистики."""
+        self.saved_values.append((values, options))
 
 
 class WritingGeometryExporter:
@@ -185,11 +185,16 @@ def test_run_batches_missing_geometry_and_saves_statistics(
         ),
     ]
     assert [call[2] for call in analyzer.calls] == [10, 11]
-    assert len(field_data.added_values) == 1
+    assert len(field_data.saved_values) == 1
     assert [
         value.field_id
-        for value in field_data.added_values[0]
+        for value in field_data.saved_values[0][0]
     ] == [10, 11]
+    assert field_data.saved_values[0][1] == {
+        "field_ids": [10, 11],
+        "acquired_on": date(2026, 7, 1),
+        "overwrite": False,
+    }
 
 
 def test_run_skips_completed_agro_before_loading_fields(tmp_path):
@@ -209,7 +214,54 @@ def test_run_skips_completed_agro_before_loading_fields(tmp_path):
     assert field_data.complete_calls
     assert field_data.field_calls == []
     assert field_data.geometry_calls == []
-    assert field_data.added_values == []
+    assert field_data.saved_values == []
+
+
+def test_run_overwrites_completed_statistics_and_clears_missing_values(
+        tmp_path,
+        monkeypatch,
+):
+    """Принудительный режим заменяет даже ранее завершённую статистику."""
+    paths = StatisticsPaths(tmp_path)
+    Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
+    field = Field(id=10, name="10")
+    Path(paths.field_geojson(3, field.name)).write_text(
+        "geometry",
+        encoding="utf-8",
+    )
+    field_data = RecordingFieldData(
+        [field],
+        {},
+        complete=True,
+    )
+    monkeypatch.setattr(
+        "processing.processors.ndvistat.clip_by_mask_array",
+        lambda *_args, **_kwargs: np.array(
+            [[-9999.0]],
+            dtype=np.float32,
+        ),
+    )
+
+    NdviStatisticsProcessor(
+        make_scene(),
+        paths,
+        field_data,
+        WritingGeometryExporter(),
+        nodata=-9999.0,
+        overwrite=True,
+    ).run()
+
+    assert field_data.complete_calls == []
+    assert field_data.saved_values == [
+        (
+            [],
+            {
+                "field_ids": [10],
+                "acquired_on": date(2026, 7, 1),
+                "overwrite": True,
+            },
+        )
+    ]
 
 
 def test_save_geojsons_rejects_field_without_id(tmp_path):
