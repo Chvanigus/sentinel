@@ -94,5 +94,5 @@ python -m compileall -q manage.py cdse cli core db domain processing satgeo scri
 проверить без БД и внешних сервисов:
 
 ```bash
-python scripts/gdal_smoke.py
+python -m scripts.gdal_smoke
 ```
