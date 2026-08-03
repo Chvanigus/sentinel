@@ -7,6 +7,9 @@ def normalized_difference(
         primary: np.ndarray,
         secondary: np.ndarray,
         *,
+        primary_offset: float = 0.0,
+        secondary_offset: float = 0.0,
+        source_nodata: float = 0.0,
         nodata: float = -9999.0,
 ) -> np.ndarray:
     """Рассчитывает нормализованную разность двух одинаковых по форме бандов."""
@@ -18,14 +21,22 @@ def normalized_difference(
             f"{primary_array.shape} != {secondary_array.shape}"
         )
 
-    denominator = primary_array + secondary_array
+    source_valid = (
+        np.isfinite(primary_array)
+        & np.isfinite(secondary_array)
+        & (primary_array != source_nodata)
+        & (secondary_array != source_nodata)
+    )
+    primary_reflectance = primary_array + primary_offset
+    secondary_reflectance = secondary_array + secondary_offset
+    denominator = primary_reflectance + secondary_reflectance
     result = np.full(primary_array.shape, nodata, dtype=np.float32)
     with np.errstate(divide="ignore", invalid="ignore"):
         np.divide(
-            primary_array - secondary_array,
+            primary_reflectance - secondary_reflectance,
             denominator,
             out=result,
-            where=denominator != 0,
+            where=source_valid & (denominator != 0),
         )
 
     valid = np.isfinite(result) & (result != nodata)

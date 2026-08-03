@@ -7,8 +7,10 @@ import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
+from xml.etree import ElementTree
 
 from core.logging import get_logger
+from processing.domain import BandOffsets
 
 
 class ArchiveError(RuntimeError):
@@ -23,6 +25,7 @@ class ArchiveMetadata:
     date: date
     tile: str
     level: str
+    processing_baseline: int | None = None
 
 
 class SentinelArchive:
@@ -59,7 +62,79 @@ class SentinelArchive:
         level = cls._required_match(
             filename, r"MSIL[1-2][A-C]", "уровень"
         )
-        return ArchiveMetadata(satellite, acquired_on, tile, level)
+        baseline_match = re.search(r"_N(?P<baseline>\d{4})_", filename)
+        baseline = (
+            int(baseline_match.group("baseline"))
+            if baseline_match is not None
+            else None
+        )
+        return ArchiveMetadata(
+            satellite,
+            acquired_on,
+            tile,
+            level,
+            baseline,
+        )
+
+    @staticmethod
+    def _local_name(tag: str) -> str:
+        """Удаляет XML namespace из имени элемента метаданных."""
+        return tag.rsplit("}", 1)[-1]
+
+    def read_band_offsets(self) -> BandOffsets:
+        """Читает radiometric offset B03/B04/B08 из metadata XML."""
+        if not self.path.is_file() or not zipfile.is_zipfile(self.path):
+            raise ArchiveError(f"Некорректный ZIP: {self.path}")
+
+        expected_tag = (
+            "RADIO_ADD_OFFSET"
+            if self.metadata.level == "MSIL1C"
+            else "BOA_ADD_OFFSET"
+        )
+        with zipfile.ZipFile(self.path) as source_zip:
+            metadata_members = [
+                member
+                for member in source_zip.infolist()
+                if Path(member.filename).name.upper().startswith("MTD_MSIL")
+                and member.filename.lower().endswith(".xml")
+            ]
+            if not metadata_members:
+                if (self.metadata.processing_baseline or 0) >= 400:
+                    raise ArchiveError(
+                        "В продукте с baseline >= 04.00 отсутствует "
+                        "MTD_MSIL metadata XML"
+                    )
+                return BandOffsets()
+
+            with source_zip.open(metadata_members[0]) as metadata_stream:
+                root = ElementTree.parse(metadata_stream).getroot()
+
+        band_by_id = {2: "b03", 3: "b04", 7: "b08"}
+        offsets = {"b03": 0.0, "b04": 0.0, "b08": 0.0}
+        found = set()
+        for element in root.iter():
+            if self._local_name(element.tag) != expected_tag:
+                continue
+            band_id_value = (
+                element.attrib.get("band_id")
+                or element.attrib.get("bandId")
+            )
+            if band_id_value is None or element.text is None:
+                continue
+            band_name = band_by_id.get(int(band_id_value))
+            if band_name is None:
+                continue
+            offsets[band_name] = float(element.text.strip())
+            found.add(band_name)
+
+        if (self.metadata.processing_baseline or 0) >= 400 and found != set(
+                offsets
+        ):
+            missing = ", ".join(sorted(set(offsets) - found)).upper()
+            raise ArchiveError(
+                f"В metadata XML отсутствуют radiometric offset: {missing}"
+            )
+        return BandOffsets(**offsets)
 
     @staticmethod
     def _matches_band(

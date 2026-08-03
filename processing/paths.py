@@ -234,3 +234,10 @@ class NdviStatisticsPaths(ScenePaths):
             self.workspace.ndvi
             / f"A{agroid}_{self.scene.date_label}_FIELD{field_code}.geojson"
         )
+
+    def scl_source(self, agroid: int) -> str:
+        """Возвращает приведённую к сетке NDVI маску SCL хозяйства."""
+        return str(
+            self.workspace.processed
+            / self._name(f"a{agroid}_scl_10m_3857.tif")
+        )

@@ -1,7 +1,7 @@
 """Доменная модель сценария обработки спутниковых снимков."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -39,6 +39,15 @@ AGROIDS_BY_TILE: dict[str, tuple[int, ...]] = {
 
 
 @dataclass(frozen=True)
+class BandOffsets:
+    """Аддитивные radiometric offset нужных спектральных каналов."""
+
+    b03: float = 0.0
+    b04: float = 0.0
+    b08: float = 0.0
+
+
+@dataclass(frozen=True)
 class SceneContext:
     """Нормализованный контекст обработки одного спутникового продукта."""
 
@@ -48,12 +57,14 @@ class SceneContext:
     satellite: str
     level: ProductLevel
     agroids: tuple[int, ...]
+    band_offsets: BandOffsets = field(default_factory=BandOffsets)
 
     @classmethod
     def from_zip_info(
             cls,
             archive_path: str | Path,
             zip_info: Any,
+            band_offsets: BandOffsets | None = None,
     ) -> SceneContext:
         """Создаёт контекст сцены из метаданных распаковываемого архива."""
         tile = zip_info.tile.strip().lower()
@@ -71,6 +82,7 @@ class SceneContext:
             satellite=zip_info.satellite.strip().lower(),
             level=ProductLevel.parse(zip_info.level),
             agroids=agroids,
+            band_offsets=band_offsets or BandOffsets(),
         )
 
     @property

@@ -25,11 +25,17 @@ class SpectralIndexProcessor:
             b03_file: str | None = None,
             b04_file: str | None = None,
             b08_file: str,
+            b03_offset: float = 0.0,
+            b04_offset: float = 0.0,
+            b08_offset: float = 0.0,
             nodata: float = -9999.0,
     ):
         self._b03_file = b03_file
         self._b04_file = b04_file
         self._b08_file = b08_file
+        self._b03_offset = b03_offset
+        self._b04_offset = b04_offset
+        self._b08_offset = b08_offset
         self._nodata = nodata
         self.logger = get_logger(self.__class__.__name__)
 
@@ -92,6 +98,8 @@ class SpectralIndexProcessor:
                     ndvi = normalized_difference(
                         b08_array,
                         b04_array,
+                        primary_offset=self._b08_offset,
+                        secondary_offset=self._b04_offset,
                         nodata=self._nodata,
                     )
                     destinations["ndvi"].GetRasterBand(1).WriteArray(
@@ -104,6 +112,8 @@ class SpectralIndexProcessor:
                     ndwi = normalized_difference(
                         b03_array,
                         b08_array,
+                        primary_offset=self._b03_offset,
+                        secondary_offset=self._b08_offset,
                         nodata=self._nodata,
                     )
                     destinations["ndwi"].GetRasterBand(1).WriteArray(

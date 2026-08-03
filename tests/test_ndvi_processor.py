@@ -9,6 +9,7 @@ import pytest
 from domain.models import Field, NdviStatistics
 from processing.domain import ProductLevel, SceneContext
 from processing.processors.ndvistat import NdviStatisticsProcessor
+from processing.raster import RasterClip
 
 
 class StatisticsPaths:
@@ -25,6 +26,10 @@ class StatisticsPaths:
     def field_geojson(self, agroid: int, field_code: str) -> str:
         """Возвращает путь GeoJSON-маски поля."""
         return str(self.root / f"a{agroid}_{field_code}.geojson")
+
+    def scl_source(self, agroid: int) -> str:
+        """Возвращает тестовую SCL-маску хозяйства."""
+        return str(self.root / f"a{agroid}_scl.tif")
 
 
 class RecordingFieldData:
@@ -81,7 +86,17 @@ RASTER_CLIPS = []
 def recording_clip(source, mask, **options):
     """Фиксирует in-memory вырезку и возвращает тестовый NDVI."""
     RASTER_CLIPS.append((source, mask, options))
-    return np.array([[0.5]], dtype=np.float32)
+    value = 4.0 if "scl" in str(source) else 0.5
+    return RasterClip(
+        values=np.array([[value]], dtype=np.float32),
+        coverage=np.array([[True]], dtype=bool),
+    )
+
+
+def recording_array_clip(source, mask, **options):
+    """Фиксирует обычную вырезку SCL без повторной растеризации маски."""
+    RASTER_CLIPS.append((source, mask, options))
+    return np.array([[4.0]], dtype=np.float32)
 
 
 class RecordingAnalyzer:
@@ -91,9 +106,9 @@ class RecordingAnalyzer:
         """Создаёт пустой журнал анализируемых полей."""
         self.calls = []
 
-    def analyze(self, *, ndvi, acquired_on, field_id):
+    def analyze(self, *, ndvi, acquired_on, field_id, **metadata):
         """Фиксирует входы и возвращает статистику тестового поля."""
-        self.calls.append((ndvi.copy(), acquired_on, field_id))
+        self.calls.append((ndvi.copy(), acquired_on, field_id, metadata))
         return NdviStatistics(
             acquired_on=acquired_on,
             field_id=field_id,
@@ -125,6 +140,7 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     """Процессор пакетно получает маски, вырезает поля и сохраняет результат."""
     paths = StatisticsPaths(tmp_path)
     Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
+    Path(paths.scl_source(3)).write_bytes(b"scl")
     existing_geojson = Path(paths.field_geojson(3, "10"))
     existing_geojson.write_text("existing", encoding="utf-8")
     fields = [Field(id=10, name="10"), Field(id=11, name="11")]
@@ -136,8 +152,12 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     analyzer = RecordingAnalyzer()
     RASTER_CLIPS.clear()
     monkeypatch.setattr(
-        "processing.processors.ndvistat.clip_by_mask_array",
+        "processing.processors.ndvistat.clip_by_mask_with_coverage",
         recording_clip,
+    )
+    monkeypatch.setattr(
+        "processing.processors.ndvistat.clip_by_mask_array",
+        recording_array_clip,
     )
     processor = NdviStatisticsProcessor(
         make_scene(),
@@ -175,7 +195,25 @@ def test_run_batches_missing_geometry_and_saves_statistics(
             },
         ),
         (
+            paths.scl_source(3),
+            paths.field_geojson(3, "10"),
+            {
+                "x_resolution": 10,
+                "y_resolution": 10,
+                "nodata": -9999.0,
+            },
+        ),
+        (
             paths.ndvi_source(3),
+            paths.field_geojson(3, "11"),
+            {
+                "x_resolution": 10,
+                "y_resolution": 10,
+                "nodata": -9999.0,
+            },
+        ),
+        (
+            paths.scl_source(3),
             paths.field_geojson(3, "11"),
             {
                 "x_resolution": 10,
@@ -201,6 +239,7 @@ def test_run_skips_completed_agro_before_loading_fields(tmp_path):
     """Полностью рассчитанное хозяйство не загружает поля и геометрии."""
     paths = StatisticsPaths(tmp_path)
     Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
+    Path(paths.scl_source(3)).write_bytes(b"scl")
     field_data = RecordingFieldData([], {}, complete=True)
 
     NdviStatisticsProcessor(
@@ -217,13 +256,14 @@ def test_run_skips_completed_agro_before_loading_fields(tmp_path):
     assert field_data.saved_values == []
 
 
-def test_run_overwrites_completed_statistics_and_clears_missing_values(
+def test_run_overwrites_completed_statistics_with_quality_metadata(
         tmp_path,
         monkeypatch,
 ):
     """Принудительный режим заменяет даже ранее завершённую статистику."""
     paths = StatisticsPaths(tmp_path)
     Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
+    Path(paths.scl_source(3)).write_bytes(b"scl")
     field = Field(id=10, name="10")
     Path(paths.field_geojson(3, field.name)).write_text(
         "geometry",
@@ -235,11 +275,15 @@ def test_run_overwrites_completed_statistics_and_clears_missing_values(
         complete=True,
     )
     monkeypatch.setattr(
-        "processing.processors.ndvistat.clip_by_mask_array",
-        lambda *_args, **_kwargs: np.array(
-            [[-9999.0]],
-            dtype=np.float32,
+        "processing.processors.ndvistat.clip_by_mask_with_coverage",
+        lambda *_args, **_kwargs: RasterClip(
+            values=np.array([[-9999.0]], dtype=np.float32),
+            coverage=np.array([[True]], dtype=bool),
         ),
+    )
+    monkeypatch.setattr(
+        "processing.processors.ndvistat.clip_by_mask_array",
+        lambda *_args, **_kwargs: np.array([[4.0]], dtype=np.float32),
     )
 
     NdviStatisticsProcessor(
@@ -252,16 +296,17 @@ def test_run_overwrites_completed_statistics_and_clears_missing_values(
     ).run()
 
     assert field_data.complete_calls == []
-    assert field_data.saved_values == [
-        (
-            [],
-            {
-                "field_ids": [10],
-                "acquired_on": date(2026, 7, 1),
-                "overwrite": True,
-            },
-        )
-    ]
+    assert len(field_data.saved_values) == 1
+    values, options = field_data.saved_values[0]
+    assert len(values) == 1
+    assert values[0].mean is None
+    assert values[0].valid_pixel_count == 0
+    assert values[0].total_pixel_count == 1
+    assert options == {
+        "field_ids": [10],
+        "acquired_on": date(2026, 7, 1),
+        "overwrite": True,
+    }
 
 
 def test_save_geojsons_rejects_field_without_id(tmp_path):

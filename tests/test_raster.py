@@ -31,9 +31,45 @@ class TranslateResult:
 class MemoryResult:
     """Имитирует вырезанный в памяти растр."""
 
+    RasterXSize = 2
+    RasterYSize = 1
+
     def ReadAsArray(self):
         """Возвращает тестовые значения."""
         return np.array([[0.4, -9999.0]], dtype=np.float64)
+
+    def GetGeoTransform(self):
+        """Возвращает геотрансформацию вырезки."""
+        return 0.0, 10.0, 0.0, 10.0, 0.0, -10.0
+
+    def GetProjection(self):
+        """Возвращает проекцию вырезки."""
+        return "EPSG:3857"
+
+
+class CoverageBand:
+    """Имитирует растровую маску геометрии поля."""
+
+    def Fill(self, _value):
+        """Имитирует начальное заполнение маски."""
+
+    def ReadAsArray(self):
+        """Возвращает один пиксель поля и один пиксель рамки."""
+        return np.array([[1, 0]], dtype=np.uint8)
+
+
+class CoverageDataset:
+    """Имитирует MEM dataset растеризованного полигона."""
+
+    def SetGeoTransform(self, _transform):
+        """Принимает геотрансформацию."""
+
+    def SetProjection(self, _projection):
+        """Принимает проекцию."""
+
+    def GetRasterBand(self, _number):
+        """Возвращает маску покрытия."""
+        return CoverageBand()
 
 
 def test_translate_preserves_source_type_and_writes_atomically(
@@ -113,3 +149,45 @@ def test_clip_by_mask_array_uses_memory_and_explicit_nodata(monkeypatch):
     assert captured["options"]["srcNodata"] == -9999.0
     assert captured["options"]["dstNodata"] == -9999.0
     assert "INIT_DEST=NO_DATA" in captured["options"]["warpOptions"]
+
+
+def test_clip_by_mask_with_coverage_excludes_bounding_box_pixels(monkeypatch):
+    """Маска покрытия отличает полигон от прямоугольной рамки Warp."""
+
+    class Vector:
+        """Имитирует GeoJSON dataset."""
+
+        def GetLayer(self):
+            """Возвращает условный векторный слой."""
+            return "field-layer"
+
+    class Driver:
+        """Создаёт MEM dataset покрытия."""
+
+        def Create(self, *_args):
+            """Возвращает тестовый растр покрытия."""
+            return CoverageDataset()
+
+    fake_gdal = SimpleNamespace(
+        Warp=lambda *_args, **_kwargs: MemoryResult(),
+        OpenEx=lambda *_args: Vector(),
+        GetDriverByName=lambda _name: Driver(),
+        RasterizeLayer=lambda *_args, **_kwargs: 0,
+        OF_VECTOR=1,
+        GDT_Byte=1,
+    )
+    monkeypatch.setattr(raster, "gdal", fake_gdal)
+    monkeypatch.setattr(
+        raster,
+        "open_raster",
+        lambda _path: nullcontext(SourceDataset()),
+    )
+
+    result = raster.clip_by_mask_with_coverage(
+        "ndvi.tif",
+        "field.geojson",
+        nodata=-9999.0,
+    )
+
+    np.testing.assert_allclose(result.values, [[0.4, -9999.0]])
+    np.testing.assert_array_equal(result.coverage, [[True, False]])

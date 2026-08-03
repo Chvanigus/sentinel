@@ -91,3 +91,34 @@ def test_archive_reports_invalid_name():
     """Некорректное имя архива даёт понятную ошибку метаданных."""
     with pytest.raises(ValueError, match="спутник"):
         SentinelArchive("not-a-sentinel-product.zip")
+
+
+def test_archive_reads_l2a_radiometric_offsets(tmp_path):
+    """Архив читает смещения нужных каналов из User Product Metadata."""
+    archive_path = tmp_path / ARCHIVE_NAME
+    metadata = """<?xml version="1.0" encoding="UTF-8"?>
+    <Level-2A_User_Product>
+      <BOA_ADD_OFFSET_VALUES_LIST>
+        <BOA_ADD_OFFSET band_id="2">-1002</BOA_ADD_OFFSET>
+        <BOA_ADD_OFFSET band_id="3">-1003</BOA_ADD_OFFSET>
+        <BOA_ADD_OFFSET band_id="7">-1007</BOA_ADD_OFFSET>
+      </BOA_ADD_OFFSET_VALUES_LIST>
+    </Level-2A_User_Product>
+    """
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("PRODUCT.SAFE/MTD_MSIL2A.xml", metadata)
+
+    offsets = SentinelArchive(archive_path).read_band_offsets()
+
+    assert offsets.b03 == -1002.0
+    assert offsets.b04 == -1003.0
+    assert offsets.b08 == -1007.0
+
+
+def test_new_baseline_requires_radiometric_metadata(tmp_path):
+    """Новый processing baseline не обрабатывается с нулевым offset молча."""
+    archive_path = tmp_path / ARCHIVE_NAME
+    make_zip(archive_path)
+
+    with pytest.raises(ArchiveError, match="metadata XML"):
+        SentinelArchive(archive_path).read_band_offsets()

@@ -130,6 +130,9 @@ def test_run_converts_rasters_calculates_indices_and_archives_all(
             "b03_file": "b03.jp2",
             "b04_file": "b04.jp2",
             "b08_file": "b08.jp2",
+            "b03_offset": 0.0,
+            "b04_offset": 0.0,
+            "b08_offset": 0.0,
             "nodata": -42.0,
         }
     ]
@@ -183,6 +186,9 @@ def test_indices_resume_archives_existing_and_reads_only_needed_bands(
             "b03_file": None,
             "b04_file": "b04.jp2",
             "b08_file": "b08.jp2",
+            "b03_offset": 0.0,
+            "b04_offset": 0.0,
+            "b08_offset": 0.0,
             "nodata": -9999.0,
         }
     ]

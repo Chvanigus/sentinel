@@ -205,15 +205,14 @@ def test_dataclass_batch_excludes_generated_id():
         include_id=False,
     )
 
-    assert rows == [
-        (
-            date(2026, 7, 1),
-            42,
-            0.5,
-            0.8,
-            0.2,
-            0.0,
-            10.0,
-            True,
-        )
-    ]
+    assert rows[0][:8] == (
+        date(2026, 7, 1),
+        42,
+        0.5,
+        0.8,
+        0.2,
+        0.0,
+        10.0,
+        True,
+    )
+    assert len(rows[0]) == 23

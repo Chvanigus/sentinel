@@ -33,6 +33,22 @@ def test_normalized_difference_rejects_different_shapes():
         normalized_difference(np.ones((2, 2)), np.ones((2, 3)))
 
 
+def test_normalized_difference_applies_offsets_and_rejects_source_nodata():
+    """Формула учитывает offset, но DN=0 всегда оставляет как NO_DATA."""
+    primary = np.array([[3000.0, 0.0]])
+    secondary = np.array([[2000.0, 2000.0]])
+
+    result = normalized_difference(
+        primary,
+        secondary,
+        primary_offset=-1000.0,
+        secondary_offset=-1000.0,
+        nodata=-42.0,
+    )
+
+    np.testing.assert_allclose(result, [[1.0 / 3.0, -42.0]])
+
+
 def test_scl_mask_keeps_only_valid_finite_ndvi():
     """SCL-маска сохраняет допустимые конечные значения NDVI."""
     ndvi = np.array([[0.5, 0.7], [np.nan, 0.3]])

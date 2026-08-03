@@ -251,3 +251,8 @@ def test_l2a_statistics_uses_cloud_filtered_ndvi(tmp_path):
         / "intermediate"
         / "s2a_01_07_2026_a1_ndvi_10m_3857_filtered.tif"
     )
+    assert Path(paths.scl_source(1)) == (
+        tmp_path
+        / "processed"
+        / "s2a_01_07_2026_a1_scl_10m_3857.tif"
+    )

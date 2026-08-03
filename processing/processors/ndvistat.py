@@ -5,10 +5,11 @@ import os
 from time import perf_counter
 
 from domain.models import Field
+from processing.domain import ProductLevel
 from processing.ndvi import NdviFieldAnalyzer
 from processing.ports import FieldDataProvider
 from processing.processors.base import BaseImageProcessor
-from processing.raster import clip_by_mask_array
+from processing.raster import clip_by_mask_array, clip_by_mask_with_coverage
 from processing.storage import FieldGeometryExporter
 
 
@@ -110,16 +111,35 @@ class NdviStatisticsProcessor(BaseImageProcessor):
                     self.logger.warning("GeoJSON не найден → %s", geojson)
                     continue
 
-                val = self.analyzer.analyze(
-                    ndvi=clip_by_mask_array(
-                        src_ndvi,
+                ndvi_clip = clip_by_mask_with_coverage(
+                    src_ndvi,
+                    geojson,
+                    x_resolution=10,
+                    y_resolution=10,
+                    nodata=self.nodata,
+                )
+                scl = None
+                if self.scene.level is ProductLevel.L2A:
+                    scl_path = self.paths.scl_source(agroid)
+                    if not os.path.exists(scl_path):
+                        raise FileNotFoundError(
+                            f"SCL не найден для метаданных NDVI: {scl_path}"
+                        )
+                    scl = clip_by_mask_array(
+                        scl_path,
                         geojson,
                         x_resolution=10,
                         y_resolution=10,
                         nodata=self.nodata,
-                    ),
+                    )
+
+                val = self.analyzer.analyze(
+                    ndvi=ndvi_clip.values,
                     acquired_on=self.scene.acquired_on,
                     field_id=field.id,
+                    coverage_mask=ndvi_clip.coverage,
+                    scl=scl,
+                    source_level=self.scene.level.value.upper(),
                 )
                 if val is not None:
                     ndvi_values.append(val)

@@ -118,6 +118,9 @@ class TileImageProcessor(BaseImageProcessor):
             b03_file=sources.get("b03"),
             b04_file=sources.get("b04"),
             b08_file=sources["b08"],
+            b03_offset=self.scene.band_offsets.b03,
+            b04_offset=self.scene.band_offsets.b04,
+            b08_offset=self.scene.band_offsets.b08,
             nodata=self.options.nodata,
         ).create(outputs)
         for product, destination in outputs.items():

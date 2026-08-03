@@ -62,6 +62,7 @@ class DefaultSceneArchiveProcessor:
         scene = SceneContext.from_zip_info(
             archive_path,
             archive.metadata,
+            band_offsets=archive.read_band_offsets(),
         )
 
         extraction_started = perf_counter()
