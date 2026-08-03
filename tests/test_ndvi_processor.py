@@ -200,7 +200,7 @@ def test_run_batches_missing_geometry_and_saves_statistics(
             {
                 "x_resolution": 10,
                 "y_resolution": 10,
-                "nodata": -9999.0,
+                "nodata": 0,
             },
         ),
         (
@@ -218,7 +218,7 @@ def test_run_batches_missing_geometry_and_saves_statistics(
             {
                 "x_resolution": 10,
                 "y_resolution": 10,
-                "nodata": -9999.0,
+                "nodata": 0,
             },
         ),
     ]

@@ -132,7 +132,8 @@ class NdviStatisticsProcessor:
                         geojson,
                         x_resolution=10,
                         y_resolution=10,
-                        nodata=self.nodata,
+                        # SCL имеет тип Byte, а класс 0 означает No Data.
+                        nodata=0,
                     )
 
                 val = self.analyzer.analyze(
