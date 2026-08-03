@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import zipfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -23,8 +24,16 @@ def build_archive_index(base_path: str | Path) -> set[str]:
 
     for _root, _, files in os.walk(base_path):
         for f in files:
-            if f.endswith(".zip"):
+            if not f.lower().endswith(".zip"):
+                continue
+            archive = Path(_root) / f
+            if zipfile.is_zipfile(archive):
                 existing.add(f)
+            else:
+                logger.warning(
+                    "Повреждённый ZIP исключён из индекса: %s",
+                    archive,
+                )
 
     return existing
 

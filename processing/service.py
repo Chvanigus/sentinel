@@ -1,47 +1,59 @@
 """Application service полного сценария обработки архива."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Protocol
 
 from core.logging import get_logger
+from domain.models import LayerSourceMetadata
 
 from .discovery import ArchivePairFinder
-from .domain import ProcessingRunSummary
+from .domain import (
+    AGROIDS_BY_TILE,
+    PROCESSING_ALGORITHM_VERSION,
+    ProcessingRunSummary,
+)
 from .exceptions import ProcessingRunError
 
 
 class ProcessingStatusReader(Protocol):
     """Порт чтения статуса обработки из внешнего хранилища."""
 
-    def get_missing_agroids(self, acquired_on: date) -> list[int]:
-        """Возвращает хозяйства, для которых ещё нужны результаты."""
+    def get_missing_agroids_many(
+            self,
+            acquired_dates: list[date],
+    ) -> dict[date, list[int]]:
+        """Возвращает недостающие хозяйства сразу для набора дат."""
         ...
 
 
-class SceneArchiveProcessor(Protocol):
-    """Порт обработки одного ZIP-архива."""
+class ArchivePairProcessor(Protocol):
+    """Порт обработки согласованной пары ZIP-архивов."""
 
-    def process(self, archive_path: Path) -> None:
-        """Обрабатывает один архив сцены."""
+    def process(self, pair) -> None:
+        """Обрабатывает оба архива и общие этапы одной даты."""
         ...
 
 
 class ResultPublisher(Protocol):
     """Порт публикации результатов обработанной пары."""
 
-    def publish_date(self, acquired_on: date) -> None:
-        """Публикует готовые результаты указанной даты."""
+    def publish_date(
+            self,
+            acquired_on: date,
+            source: LayerSourceMetadata,
+    ) -> None:
+        """Публикует готовые результаты даты вместе с метаданными источника."""
         ...
 
 
 class WorkspaceCleaner(Protocol):
     """Порт очистки временного рабочего пространства."""
 
-    def clean(self) -> None:
-        """Удаляет промежуточные файлы текущей попытки."""
+    def clean(self, acquired_on: date) -> None:
+        """Удаляет только промежуточные файлы указанной даты."""
         ...
 
 
@@ -53,7 +65,7 @@ class ProcessingService:
             archive_root: str | Path,
             pair_finder: ArchivePairFinder,
             status_reader: ProcessingStatusReader,
-            scene_processor: SceneArchiveProcessor,
+            pair_processor: ArchivePairProcessor,
             publisher: ResultPublisher,
             cleaner: WorkspaceCleaner,
             process_completed: bool = False,
@@ -62,7 +74,7 @@ class ProcessingService:
         self.archive_root = Path(archive_root)
         self.pair_finder = pair_finder
         self.status_reader = status_reader
-        self.scene_processor = scene_processor
+        self.pair_processor = pair_processor
         self.publisher = publisher
         self.cleaner = cleaner
         self.process_completed = process_completed
@@ -80,7 +92,7 @@ class ProcessingService:
         run_started = perf_counter()
         root = Path(archive_root) if archive_root else self.archive_root
         pairs = self.pair_finder.find(root)
-        selected = []
+        candidates = []
         skipped = 0
 
         self.logger.info("Сканируем архив: %s", root)
@@ -95,10 +107,18 @@ class ProcessingService:
             if end_date and acquired_at >= end_date:
                 continue
 
+            candidates.append(pair)
+
+        missing_by_date = {}
+        if not debug and not self.process_completed:
+            missing_by_date = self.status_reader.get_missing_agroids_many(
+                list(dict.fromkeys(pair.acquired_on for pair in candidates))
+            )
+
+        selected = []
+        for pair in candidates:
             if not debug and not self.process_completed:
-                missing = self.status_reader.get_missing_agroids(
-                    pair.acquired_on
-                )
+                missing = missing_by_date[pair.acquired_on]
                 if not missing:
                     skipped += 1
                     self.logger.info(
@@ -133,28 +153,24 @@ class ProcessingService:
             try:
                 if self.clean_before_each:
                     cleanup_started = perf_counter()
-                    self.cleaner.clean()
+                    self.cleaner.clean(pair.acquired_on)
                     self.logger.info(
                         "PRE-CLEANUP OK: %s | %.2f сек.",
                         date_label,
                         perf_counter() - cleanup_started,
                     )
-                for archive in pair.archives:
-                    archive_started = perf_counter()
-                    self.logger.info(
-                        "ARCHIVE START: %s | %s",
-                        date_label,
-                        archive.name,
-                    )
-                    self.scene_processor.process(archive)
-                    self.logger.info(
-                        "ARCHIVE OK: %s | %s | %.2f сек.",
-                        date_label,
-                        archive.name,
-                        perf_counter() - archive_started,
-                    )
+                processing_started = perf_counter()
+                self.pair_processor.process(pair)
+                self.logger.info(
+                    "PROCESSING OK: %s | %.2f сек.",
+                    date_label,
+                    perf_counter() - processing_started,
+                )
                 publish_started = perf_counter()
-                self.publisher.publish_date(pair.acquired_on)
+                self.publisher.publish_date(
+                    pair.acquired_on,
+                    self._source_metadata(pair),
+                )
                 self.logger.info(
                     "PUBLISH OK: %s | %.2f сек.",
                     date_label,
@@ -174,11 +190,11 @@ class ProcessingService:
                     perf_counter() - pair_started,
                     exc,
                 )
-            finally:
+            else:
                 if not debug:
                     cleanup_started = perf_counter()
                     try:
-                        self.cleaner.clean()
+                        self.cleaner.clean(pair.acquired_on)
                         self.logger.info(
                             "CLEANUP OK: %s | %.2f сек.",
                             date_label,
@@ -218,3 +234,26 @@ class ProcessingService:
             perf_counter() - run_started,
         )
         return summary
+
+    @staticmethod
+    def _source_metadata(pair) -> LayerSourceMetadata:
+        """Строит метаданные публикации и привязку хозяйств к тайлам пары."""
+        by_agroid: dict[int, list[str]] = {}
+        for tile, agroids in AGROIDS_BY_TILE.items():
+            source_tile = tile.upper()
+            for agroid in agroids:
+                by_agroid.setdefault(agroid, []).append(source_tile)
+        acquired_at = pair.acquired_at
+        if acquired_at.tzinfo is None:
+            acquired_at = acquired_at.replace(tzinfo=UTC)
+        return LayerSourceMetadata(
+            acquired_at=acquired_at,
+            satellite=pair.satellite.upper(),
+            source_level=pair.level.name,
+            processing_baseline=pair.processing_baseline,
+            source_tiles_by_agroid={
+                agroid: tuple(tiles)
+                for agroid, tiles in by_agroid.items()
+            },
+            algorithm_version=PROCESSING_ALGORITHM_VERSION,
+        )

@@ -118,7 +118,6 @@ class ODataProductSearcher:
             collection: str,
             start: str,
             end: str,
-            do_download: bool,
             tiles: list[str] | None = None,
             cloud_lt: float | None = None,
             product_type: str | None = None,
@@ -133,11 +132,6 @@ class ODataProductSearcher:
             "Поиск CDSE OData: collection=%s start=%s end=%s",
             collection, start, end
         )
-
-        if do_download:
-            logger.info("После поиска будет запущено скачивание")
-        else:
-            logger.info("Поиск без скачивания")
 
         day_ranges = split_date_range(
             start,
@@ -207,7 +201,6 @@ class ODataProductSearcher:
             collection: str,
             start: str,
             end: str,
-            do_download: bool,
             tiles: list[str] | None = None,
             cloud_lt: float | None = None,
             product_type: str | None = None,
@@ -223,7 +216,6 @@ class ODataProductSearcher:
                 collection=collection,
                 start=start,
                 end=end,
-                do_download=do_download,
                 tiles=tiles,
                 cloud_lt=cloud_lt,
                 product_type=product_type,
@@ -233,28 +225,5 @@ class ODataProductSearcher:
             )
         )
 
-        records = self._deduplicate_largest_per_tile_date(records)
         records.sort(key=lambda r: (r.tile or "", r.date or "", r.name or ""))
         return records
-
-    @staticmethod
-    def _deduplicate_largest_per_tile_date(records: list[ProductRecord]) -> \
-            list[ProductRecord]:
-        """
-        Для каждой пары (tile, date) оставляет самый большой продукт.
-        """
-        best: dict[tuple[str, str], ProductRecord] = {}
-
-        for record in records:
-            key = (record.tile, record.date)
-            current = best.get(key)
-            if current is None:
-                best[key] = record
-                continue
-
-            current_size = current.size_bytes or 0
-            new_size = record.size_bytes or 0
-            if new_size > current_size:
-                best[key] = record
-
-        return list(best.values())

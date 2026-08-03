@@ -13,8 +13,9 @@ from cdse.download import ODataProductDownloader
 from cdse.exceptions import CdseAuthError, CdseQueryError
 from cdse.models import ProductRecord
 from cdse.search import ODataProductSearcher
+from cdse.selection import select_complete_acquisitions
 from cdse.service import CdseService
-from cdse.utils import normalize_tile, split_date_range
+from cdse.utils import build_archive_index, normalize_tile, split_date_range
 from cli.commands.download import resolve_download_range
 from core.settings import (
     L1C_COLLECTION,
@@ -211,6 +212,17 @@ def test_corrupt_final_zip_is_preserved_and_downloaded_again(tmp_path):
     assert final.with_suffix(".zip.corrupt").read_bytes() == b"broken"
 
 
+def test_archive_index_ignores_corrupt_zip(tmp_path):
+    """Повреждённый ZIP не помечает продукт скачанным."""
+    broken = tmp_path / "broken.zip"
+    broken.write_bytes(b"not-a-zip")
+    valid = tmp_path / "valid.zip"
+    with zipfile.ZipFile(valid, "w") as archive:
+        archive.writestr("manifest.safe", b"ok")
+
+    assert build_archive_index(tmp_path) == {"valid.zip"}
+
+
 def test_client_closes_unauthorized_response_before_retry():
     """Ответ 401 освобождает соединение пула до повторного запроса."""
 
@@ -294,13 +306,97 @@ def test_l2a_search_falls_back_to_l1c():
         collection="SENTINEL-2",
         start="2026-07-01",
         end="2026-07-01",
-        do_download=False,
         tiles=["T38ULA"],
         product_type=L2A_PRODUCT_TYPE,
     )
 
     assert searcher.product_types == [L2A_PRODUCT_TYPE, L1C_PRODUCT_TYPE]
     assert grouped["38ULA"] == [record]
+
+
+def test_pair_selection_keeps_largest_complete_acquisition():
+    """Выбор сохраняет крупнейшие версии, но не смешивает разные пролёты."""
+    first_ula = product(
+        product_id="first-ula",
+        name="S2A_MSIL2A_20260701T080000_N0600_R000_T38ULA_20260701T100000.SAFE",
+        tile="38ULA",
+        size_bytes=100,
+    )
+    first_ula_large = product(
+        product_id="first-ula-large",
+        name="S2A_MSIL2A_20260701T080000_N0600_R000_T38ULA_20260701T110000.SAFE",
+        tile="38ULA",
+        size_bytes=300,
+    )
+    first_ulb = product(
+        product_id="first-ulb",
+        name="S2A_MSIL2A_20260701T080000_N0600_R000_T38ULB_20260701T100000.SAFE",
+        tile="38ULB",
+        size_bytes=250,
+    )
+    incomplete_larger = product(
+        product_id="second-ula",
+        name="S2B_MSIL2A_20260701T100000_N0600_R000_T38ULA_20260701T120000.SAFE",
+        tile="38ULA",
+        size_bytes=1000,
+    )
+
+    selected = select_complete_acquisitions(
+        [first_ula, first_ula_large, first_ulb, incomplete_larger],
+        ["38ULA", "38ULB"],
+    )
+
+    assert [item.product_id for item in selected] == [
+        "first-ula-large",
+        "first-ulb",
+    ]
+
+
+def test_partial_l2a_pair_falls_back_to_complete_l1c_pair():
+    """Неполный L2A-пролёт не смешивается и заменяется полной парой L1C."""
+    partial_l2a = product(
+        product_id="l2a-ula",
+        name="S2A_MSIL2A_20260701T080000_N0600_R000_T38ULA_20260701T100000.SAFE",
+        tile="38ULA",
+    )
+    fallback_ula = product(
+        product_id="l1c-ula",
+        name="S2A_MSIL1C_20260701T080000_N0600_R000_T38ULA_20260701T100000.SAFE",
+        tile="38ULA",
+    )
+    fallback_ulb = product(
+        product_id="l1c-ulb",
+        name="S2A_MSIL1C_20260701T080000_N0600_R000_T38ULB_20260701T100000.SAFE",
+        tile="38ULB",
+    )
+
+    class Searcher:
+        """Возвращает разные результаты для L2A и L1C."""
+
+        def search(self, **options):
+            """Возвращает набор указанного уровня обработки."""
+            if options["product_type"] == L2A_PRODUCT_TYPE:
+                return [partial_l2a]
+            return [fallback_ula, fallback_ulb]
+
+    service = CdseService(
+        searcher=Searcher(),
+        downloader=object(),
+        fallback_collection=L1C_COLLECTION,
+        preferred_product_type=L2A_PRODUCT_TYPE,
+        fallback_product_type=L1C_PRODUCT_TYPE,
+    )
+
+    grouped = service.search(
+        collection="SENTINEL-2",
+        start="2026-07-01",
+        end="2026-07-01",
+        tiles=["38ULA", "38ULB"],
+        product_type=L2A_PRODUCT_TYPE,
+    )
+
+    assert grouped["38ULA"] == [fallback_ula]
+    assert grouped["38ULB"] == [fallback_ulb]
 
 
 def test_download_orchestrator_reports_failed_tasks():
@@ -348,7 +444,6 @@ def test_search_matches_legacy_archive_name_without_safe_suffix():
         collection="SENTINEL-2",
         start="2026-07-01",
         end="2026-07-01",
-        do_download=False,
         archive_index={"SCENE.zip"},
     )
 

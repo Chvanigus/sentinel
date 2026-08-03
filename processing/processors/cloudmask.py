@@ -3,6 +3,7 @@ import os
 
 from osgeo import gdal
 
+from core.logging import get_logger
 from processing.calculations import apply_scl_mask
 from processing.dataset import (
     atomic_raster_path,
@@ -11,14 +12,18 @@ from processing.dataset import (
     iter_raster_windows,
     open_raster,
 )
-from processing.processors.base import BaseImageProcessor
 
 
-class RescaleSCLProcessor(BaseImageProcessor):
+class RescaleSCLProcessor:
     """
     Ресемплирует маску облачности (SCL) до 10м,
     основываясь на разрешении NDVI.
     """
+
+    def __init__(self, scene, paths):
+        self.scene = scene
+        self.paths = paths
+        self.logger = get_logger(self.__class__.__name__)
 
     def run(self) -> None:
         """Ресемплирует SCL каждого хозяйства до сетки соответствующего NDVI."""
@@ -84,7 +89,7 @@ class RescaleSCLProcessor(BaseImageProcessor):
         )
 
 
-class FilterNDVIProcessor(BaseImageProcessor):
+class FilterNDVIProcessor:
     """Фильтрует NDVI с использованием SCL-маски (10м)."""
     VALID_SCL_VALUES = (4, 5, 6, 7)
 
@@ -92,7 +97,9 @@ class FilterNDVIProcessor(BaseImageProcessor):
                  scene,
                  paths,
                  options):
-        super().__init__(scene, paths)
+        self.scene = scene
+        self.paths = paths
+        self.logger = get_logger(self.__class__.__name__)
         self.options = options
 
     def run(self) -> None:

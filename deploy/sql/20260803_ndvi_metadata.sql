@@ -59,6 +59,26 @@ ALTER TABLE gpgeo.maps_ndvi_values
             OR source_level IN ('MSIL1C', 'MSIL2A')
         );
 
+COMMENT ON TABLE gpgeo.maps_ndvi_values
+    IS 'Статистика NDVI и показатели качества по одному полю за дату съёмки';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.id
+    IS 'Уникальный идентификатор записи статистики';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.fieldid
+    IS 'Поле, для которого рассчитаны NDVI и показатели качества';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.date
+    IS 'Календарная дата спутниковой съёмки';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.ndvimean
+    IS 'Среднее NDVI по валидным пикселям поля';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.ndvimax
+    IS 'Максимальное NDVI среди валидных пикселей поля';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.ndvimin
+    IS 'Минимальное NDVI среди валидных пикселей поля';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.growth_percent
+    IS 'Процент изменения NDVI относительно выбранного предыдущего периода; NULL, если сравнение не выполнялось';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.ndvi_cv
+    IS 'Коэффициент вариации NDVI в процентах: стандартное отклонение относительно среднего';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.is_uniform
+    IS 'Признак статистической и пространственной однородности валидной части поля';
 COMMENT ON COLUMN gpgeo.maps_ndvi_values.valid_pixel_count
     IS 'Количество пикселей поля, использованных при расчёте NDVI';
 COMMENT ON COLUMN gpgeo.maps_ndvi_values.total_pixel_count

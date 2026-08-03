@@ -111,6 +111,10 @@ make recalculate-ndvi START=2026-07-01 END=2026-07-31
 `RADIO_ADD_OFFSET`/`BOA_ADD_OFFSET` из User Product Metadata. Каноническая
 миграция таблицы находится в
 [`deploy/sql/20260803_ndvi_metadata.sql`](deploy/sql/20260803_ndvi_metadata.sql).
+Метаданные визуальных слоёв добавляет
+[`deploy/sql/20260803_layer_metadata.sql`](deploy/sql/20260803_layer_metadata.sql),
+а независимые русские комментарии ко всем столбцам обеих таблиц собраны в
+[`deploy/sql/20260803_table_comments.sql`](deploy/sql/20260803_table_comments.sql).
 
 ## Автоматизация
 

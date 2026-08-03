@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .domain import ArchivePair
+from .domain import ArchivePair, ProductLevel
 
 ZipIterator = Callable[[str], Iterable[str]]
 
@@ -28,6 +28,8 @@ class ArchiveName:
     satellite: str
     acquired_at: datetime
     tile: str
+    level: ProductLevel = ProductLevel.L2A
+    processing_baseline: int | None = None
 
 
 ZipNameParser = Callable[[str], ArchiveName | None]
@@ -38,6 +40,15 @@ def parse_archive_name(path: str) -> ArchiveName | None:
     match = _ARCHIVE_NAME.fullmatch(Path(path).name)
     if match is None:
         return None
+    filename = Path(path).name
+    level_match = re.search(r"MSIL[12][AC]", filename, re.IGNORECASE)
+    if level_match is None:
+        return None
+    baseline_match = re.search(
+        r"_N(?P<baseline>\d{4})_",
+        filename,
+        re.IGNORECASE,
+    )
     return ArchiveName(
         satellite=match.group("satellite").lower(),
         acquired_at=datetime.strptime(
@@ -45,6 +56,12 @@ def parse_archive_name(path: str) -> ArchiveName | None:
             "%Y%m%dT%H%M%S",
         ),
         tile=match.group("tile").lower(),
+        level=ProductLevel.parse(level_match.group()),
+        processing_baseline=(
+            int(baseline_match.group("baseline"))
+            if baseline_match is not None
+            else None
+        ),
     )
 
 
@@ -68,9 +85,9 @@ class ArchivePairFinder:
         self._name_parser = name_parser
 
     def find(self, archive_root: str | Path) -> list[ArchivePair]:
-        """Возвращает полные пары одной съёмки, не смешивая спутники и время."""
+        """Возвращает крупнейшие полные пары, не смешивая пролёты и уровни."""
         grouped: dict[
-            tuple[str, datetime, str],
+            tuple[str, datetime, str, ProductLevel, int | None],
             dict[str, list[Path]],
         ] = defaultdict(lambda: defaultdict(list))
 
@@ -89,17 +106,58 @@ class ArchivePairFinder:
 
             prefix = tile[:-3]
             grouped[
-                (parsed.satellite, parsed.acquired_at, prefix)
+                (
+                    parsed.satellite,
+                    parsed.acquired_at,
+                    prefix,
+                    parsed.level,
+                    parsed.processing_baseline,
+                )
             ][side].append(Path(zip_path))
 
-        pairs = [
+        candidates = [
             ArchivePair(
                 acquired_at=acquired_at,
                 prefix=prefix,
-                ula=max(sides["ula"], key=lambda path: path.name),
-                ulb=max(sides["ulb"], key=lambda path: path.name),
+                ula=max(sides["ula"], key=self._archive_rank),
+                ulb=max(sides["ulb"], key=self._archive_rank),
+                level=level,
+                processing_baseline=baseline,
+                satellite=satellite,
             )
-            for (_satellite, acquired_at, prefix), sides in grouped.items()
+            for (
+                satellite,
+                acquired_at,
+                prefix,
+                level,
+                baseline,
+            ), sides in grouped.items()
             if "ula" in sides and "ulb" in sides
         ]
-        return sorted(pairs, key=lambda pair: pair.acquired_at)
+
+        best: dict[tuple[object, str], ArchivePair] = {}
+        for pair in candidates:
+            key = (pair.acquired_on, pair.prefix)
+            current = best.get(key)
+            if current is None or self._pair_rank(pair) > self._pair_rank(current):
+                best[key] = pair
+        return sorted(best.values(), key=lambda pair: pair.acquired_at)
+
+    @staticmethod
+    def _archive_rank(path: Path) -> tuple[int, str]:
+        """Сравнивает повторные публикации по размеру и стабильному имени."""
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        return size, path.name
+
+    @classmethod
+    def _pair_rank(cls, pair: ArchivePair) -> tuple[int, int, int, datetime]:
+        """Предпочитает L2A, затем крупнейший и наиболее новый комплект."""
+        return (
+            int(pair.level is ProductLevel.L2A),
+            cls._archive_rank(pair.ula)[0] + cls._archive_rank(pair.ulb)[0],
+            pair.processing_baseline or -1,
+            pair.acquired_at,
+        )

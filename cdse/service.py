@@ -12,6 +12,7 @@ from core.logging import get_logger
 from .download import ODataProductDownloader
 from .models import ProductRecord
 from .search import ODataProductSearcher
+from .selection import select_complete_acquisitions
 from .utils import normalize_tile
 
 logger = get_logger(__name__)
@@ -48,42 +49,53 @@ class CdseService:
             collection: str,
             start: str,
             end: str,
-            do_download: bool,
             tiles: list[str] | None = None,
             cloud_lt: float | None = None,
             archive_index: set[str] | None = None,
             product_type: str | None = None,
     ) -> dict[str, list[ProductRecord]]:
         """Ищет предпочтительный продукт и при отсутствии включает fallback."""
-        items = self.searcher.search(
+        preferred_items = self.searcher.search(
             collection=collection,
             start=start,
             end=end,
-            do_download=do_download,
             tiles=tiles,
             cloud_lt=cloud_lt,
             product_type=product_type,
             archive_index=archive_index,
         )
 
-        if (
-                not items
-                and product_type == self.preferred_product_type
+        items = select_complete_acquisitions(preferred_items, tiles)
+        selected_dates = {item.date for item in items}
+        incomplete_dates = {
+            item.date for item in preferred_items
+        } - selected_dates
+
+        if product_type == self.preferred_product_type and (
+                not items or incomplete_dates
         ):
             logger.info(
-                "%s не найдено, переключаемся на %s",
+                "Для %s нет полного комплекта за даты %s; ищем %s",
                 self.preferred_product_type,
+                ", ".join(sorted(incomplete_dates)) or "всего диапазона",
                 self.fallback_product_type,
             )
-            items = self.searcher.search(
+            fallback_items = self.searcher.search(
                 collection=self.fallback_collection,
                 start=start,
                 end=end,
-                do_download=do_download,
                 tiles=tiles,
                 cloud_lt=cloud_lt,
                 product_type=self.fallback_product_type,
                 archive_index=archive_index,
+            )
+            items.extend(
+                item
+                for item in select_complete_acquisitions(
+                    fallback_items,
+                    tiles,
+                )
+                if item.date not in selected_dates
             )
 
         return self.group_by_tile(items, tiles)

@@ -2,13 +2,13 @@
 import os
 from pathlib import Path
 
+from core.logging import get_logger
 from processing.domain import ProductLevel
 from processing.indexes import SpectralIndexProcessor
-from processing.processors.base import BaseImageProcessor
 from processing.raster import translate_to_geotiff
 
 
-class TileImageProcessor(BaseImageProcessor):
+class TileImageProcessor:
     """Создаёт tile-level TCI, NDVI и NDWI из каналов Sentinel."""
 
     PRODUCTS = frozenset({"tci", "scl", "ndvi", "ndwi"})
@@ -21,7 +21,9 @@ class TileImageProcessor(BaseImageProcessor):
             options,
             products=None,
     ):
-        super().__init__(scene, paths)
+        self.scene = scene
+        self.paths = paths
+        self.logger = get_logger(self.__class__.__name__)
         self.output_archive = output_archive
         self.options = options
         self.products = frozenset(products or self.PRODUCTS)

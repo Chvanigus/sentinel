@@ -1,11 +1,12 @@
 
 """Тесты планирования и пакетной публикации растров."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 
 from core.logging import get_logger
+from domain.models import LayerSourceMetadata
 from satgeo import publisher as publisher_module
 from satgeo.publisher import (
     PostgisPublicationRepository,
@@ -23,23 +24,27 @@ def test_publish_date_raises_when_a_file_was_not_published(
     publisher = RasterPublisher.__new__(RasterPublisher)
     publisher.source_root = tmp_path
     publisher.logger = get_logger("test-publication")
-    publisher._publish_file = lambda _path: (False, "optimize_failed")
+    publisher._publish_file = lambda _path, _source=None: (
+        False,
+        "optimize_failed",
+    )
 
     with pytest.raises(RuntimeError, match=raster.name):
         publisher.publish_date(date(2026, 7, 1))
 
 
 def test_publish_date_ignores_non_tiff_files(tmp_path):
-    """Служебные файлы не передаются в публикацию."""
+    """Служебные файлы не публикуются и не скрывают отсутствие TIFF."""
     (tmp_path / "notes.txt").write_text("metadata", encoding="utf-8")
     publisher = RasterPublisher.__new__(RasterPublisher)
     publisher.source_root = tmp_path
     publisher.logger = get_logger("test-publication-non-tiff")
-    publisher._publish_file = lambda _path: pytest.fail(
+    publisher._publish_file = lambda _path, _source=None: pytest.fail(
         "Служебный файл не должен публиковаться"
     )
 
-    publisher.publish_date(date(2026, 7, 1))
+    with pytest.raises(RuntimeError, match="Не найдены готовые TIFF"):
+        publisher.publish_date(date(2026, 7, 1))
 
 
 def test_publish_date_does_not_repeat_previous_dates(tmp_path):
@@ -52,7 +57,7 @@ def test_publish_date_does_not_repeat_previous_dates(tmp_path):
     publisher = RasterPublisher.__new__(RasterPublisher)
     publisher.source_root = tmp_path
     publisher.logger = get_logger("test-publication-date")
-    publisher._publish_file = lambda path: (
+    publisher._publish_file = lambda path, _source=None: (
         published.append(path) is None,
         path.name,
     )
@@ -88,6 +93,86 @@ def test_publication_planner_builds_host_and_container_paths(tmp_path):
         "/opt/geoserver_data/geoware/2026/a3/ndvi/07/"
         "a3_ndvi_2026-07-01.tif"
     )
+
+
+def test_publication_persists_visual_metadata(tmp_path):
+    """Публикация сохраняет метаданные источника и покрытия хозяйства."""
+    source_file = tmp_path / "s2b_01_07_2026_a3_ndvi_10m_3857.tif"
+    source_file.write_bytes(b"source")
+    layers = []
+
+    class Client:
+        """Имитирует создание нового ресурса GeoServer."""
+
+        def create_coveragestore(self, **_options):
+            """Сообщает о создании нового coverage store."""
+            return True
+
+        def set_layer_style(self, *_args):
+            """Имитирует установку стиля."""
+
+        def enable_gwc_gridset_3857(self, _layer_name):
+            """Имитирует включение WebMercator gridset."""
+            return True
+
+        def seed_gwc_cache(self, **_options):
+            """Имитирует прогрев кэша."""
+            return True
+
+    class Repository:
+        """Фиксирует сохраняемые метаданные слоя."""
+
+        def add_layer(self, layer):
+            """Запоминает опубликованный слой."""
+            layers.append(layer)
+
+        def quality(self, **_options):
+            """Возвращает тестовые проценты покрытия."""
+            return 12.5, 81.25
+
+        def bounds(self, **_options):
+            """Возвращает тестовые границы хозяйства."""
+            return 1.0, 2.0, 3.0, 4.0
+
+    acquired_at = datetime(2026, 7, 1, 8, 16, 11, tzinfo=UTC)
+    publisher = RasterPublisher(
+        source_root=tmp_path,
+        workspace="sentinel",
+        current_year=2027,
+        planner=PublicationPlanner(
+            tmp_path / "geoware",
+            "/opt/geoserver_data/geoware",
+        ),
+        client=Client(),
+        repository=Repository(),
+        optimizer=lambda src, dst: dst.parent.mkdir(parents=True)
+        or dst.write_bytes(src.read_bytes()),
+    )
+
+    publisher.publish_date(
+        date(2026, 7, 1),
+        LayerSourceMetadata(
+            acquired_at=acquired_at,
+            satellite="S2B",
+            source_level="L2A",
+            processing_baseline=511,
+            source_tiles_by_agroid={3: ("T38ULA",)},
+            algorithm_version="3.0.0",
+        ),
+    )
+
+    assert len(layers) == 1
+    layer = layers[0]
+    assert layer.acquired_at == acquired_at
+    assert layer.satellite == "S2B"
+    assert layer.source_level == "L2A"
+    assert layer.processing_baseline == 511
+    assert layer.source_tiles == ("T38ULA",)
+    assert layer.cloud_coverage_percent == 12.5
+    assert layer.valid_coverage_percent == 81.25
+    assert layer.resolution_m == 10
+    assert layer.is_cloud_masked is False
+    assert layer.algorithm_version == "3.0.0"
 
 
 def test_postgis_repository_caches_repeated_agro_bounds(monkeypatch):
@@ -193,3 +278,64 @@ def test_refresh_product_overwrites_cog_and_reseeds_cache(tmp_path):
     assert success is True
     assert optimized == [(source, destination)]
     assert seed_calls[0]["reseed"] is True
+
+
+def test_existing_layer_skips_reconfiguration_and_cache_seed(tmp_path):
+    """Повторная публикация готового слоя не запускает дорогие операции GWC."""
+    source = tmp_path / "s2a_01_07_2026_a3_ndwi_10m_3857.tif"
+    source.write_bytes(b"source")
+    planner = PublicationPlanner(
+        tmp_path / "geoware",
+        "/opt/geoserver_data/geoware",
+    )
+    destination = planner.build(source).destination
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"published")
+    saved = []
+
+    class Client:
+        """Имитирует уже существующий coverage store."""
+
+        def create_coveragestore(self, **_options):
+            """Сообщает, что ресурс существовал до запуска."""
+            return False
+
+        def set_layer_style(self, *_args):
+            """Запрещает повторную настройку стиля."""
+            pytest.fail("Стиль существующего слоя не нужно переназначать")
+
+        def enable_gwc_gridset_3857(self, _layer_name):
+            """Запрещает повторную настройку gridset."""
+            pytest.fail("Gridset существующего слоя уже настроен")
+
+        def seed_gwc_cache(self, **_options):
+            """Запрещает повторный seed неизменённого слоя."""
+            pytest.fail("Неизменённый слой не нужно прогревать повторно")
+
+    class Repository:
+        """Фиксирует идемпотентное обновление записи слоя."""
+
+        def add_layer(self, layer):
+            """Запоминает запись слоя."""
+            saved.append(layer)
+
+        def bounds(self, **_options):
+            """Запрещает лишнее чтение границ."""
+            pytest.fail("Границы без seed не требуются")
+
+    publisher = RasterPublisher(
+        source_root=tmp_path,
+        workspace="sentinel",
+        current_year=2026,
+        planner=planner,
+        client=Client(),
+        repository=Repository(),
+        optimizer=lambda *_args: pytest.fail(
+            "Существующий COG не нужно формировать повторно"
+        ),
+    )
+
+    success, _layer_name = publisher._publish_file(source)
+
+    assert success is True
+    assert len(saved) == 1

@@ -5,14 +5,14 @@ import os
 
 from osgeo import gdal, osr
 
+from core.logging import get_logger
 from processing.dataset import atomic_raster_path, open_raster
 from processing.domain import ProductLevel
 from processing.geometry import intersect_raster_bounds
 from processing.ports import FieldDataProvider
-from processing.processors.base import BaseImageProcessor
 
 
-class AgroCropProcessor(BaseImageProcessor):
+class AgroCropProcessor:
     """Вырезает продукты сцены по границам связанных хозяйств."""
 
     def __init__(
@@ -23,7 +23,9 @@ class AgroCropProcessor(BaseImageProcessor):
             options,
             products=None,
     ):
-        super().__init__(scene, paths)
+        self.scene = scene
+        self.paths = paths
+        self.logger = get_logger(self.__class__.__name__)
         self.field_data = field_data
         self.options = options
         self.products = frozenset(

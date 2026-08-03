@@ -1,13 +1,13 @@
 """Repositories предметных данных Sentinel."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from domain.models import Field, NdviStatistics, PublishedLayer
 
 from .gateway import SqlGateway
-from .models import LayerRecord, NdviRecord
+from .models import NdviRecord
 
 
 class LayerRepository:
@@ -20,37 +20,89 @@ class LayerRepository:
         self.gateway = gateway
 
     def add(self, layer: PublishedLayer) -> None:
-        """Сохраняет слой одной идемпотентной вставкой ``ON CONFLICT``."""
-        self.gateway.insert_one(
-            LayerRecord,
-            LayerRecord(
-                date=layer.acquired_on,
-                set=layer.product,
-                agroid=layer.agroid,
-                name=layer.name,
+        """Создаёт слой либо обновляет его изменяемые визуальные метаданные."""
+        self.gateway.execute(
+            """
+            INSERT INTO gpgeo.maps_layer (
+                date, fieldid, set, agroid, name, acquired_at, satellite,
+                source_level, processing_baseline, source_tiles,
+                cloud_coverage_percent, valid_coverage_percent,
+                resolution_m, is_cloud_masked, algorithm_version, generated_at
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (name) DO UPDATE SET
+                acquired_at = EXCLUDED.acquired_at,
+                satellite = EXCLUDED.satellite,
+                source_level = EXCLUDED.source_level,
+                processing_baseline = EXCLUDED.processing_baseline,
+                source_tiles = EXCLUDED.source_tiles,
+                cloud_coverage_percent = EXCLUDED.cloud_coverage_percent,
+                valid_coverage_percent = EXCLUDED.valid_coverage_percent,
+                resolution_m = EXCLUDED.resolution_m,
+                is_cloud_masked = EXCLUDED.is_cloud_masked,
+                algorithm_version = EXCLUDED.algorithm_version,
+                generated_at = EXCLUDED.generated_at
+            """,
+            (
+                layer.acquired_on,
+                None,
+                layer.product,
+                layer.agroid,
+                layer.name,
+                layer.acquired_at,
+                layer.satellite,
+                layer.source_level,
+                layer.processing_baseline,
+                list(layer.source_tiles) or None,
+                layer.cloud_coverage_percent,
+                layer.valid_coverage_percent,
+                layer.resolution_m,
+                layer.is_cloud_masked,
+                layer.algorithm_version,
+                layer.generated_at or datetime.now(UTC),
             ),
-            conflict_fields="name",
         )
 
     def missing_agroids(self, acquired_on: date) -> list[int]:
         """Возвращает хозяйства без полного набора обязательных слоёв."""
+        return self.missing_agroids_many([acquired_on])[acquired_on]
+
+    def missing_agroids_many(
+            self,
+            acquired_dates: list[date],
+    ) -> dict[date, list[int]]:
+        """Одним запросом возвращает незавершённые хозяйства нескольких дат."""
+        dates = list(dict.fromkeys(acquired_dates))
+        if not dates:
+            return {}
         query = """
-            SELECT DISTINCT agroid, set
+            SELECT DISTINCT date, agroid, set
             FROM gpgeo.maps_layer
-            WHERE date = %s AND agroid = ANY (%s)
+            WHERE date = ANY (%s) AND agroid = ANY (%s)
         """
         rows = self.gateway.rows(
             query,
-            (acquired_on, list(self.REQUIRED_AGROIDS)),
+            (dates, list(self.REQUIRED_AGROIDS)),
         )
-        found: dict[int, set[str]] = {}
+        found: dict[tuple[date, int], set[str]] = {}
         for row in rows:
-            found.setdefault(row["agroid"], set()).add(row["set"])
-        return [
-            agroid
-            for agroid in self.REQUIRED_AGROIDS
-            if not self.REQUIRED_SETS.issubset(found.get(agroid, set()))
-        ]
+            found.setdefault(
+                (row["date"], row["agroid"]),
+                set(),
+            ).add(row["set"])
+        return {
+            acquired_on: [
+                agroid
+                for agroid in self.REQUIRED_AGROIDS
+                if not self.REQUIRED_SETS.issubset(
+                    found.get((acquired_on, agroid), set())
+                )
+            ]
+            for acquired_on in dates
+        }
 
 
 class FieldRepository:

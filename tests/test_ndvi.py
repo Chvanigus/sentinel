@@ -84,6 +84,24 @@ def test_uniformity_accepts_smooth_vegetated_field():
     assert NdviFieldAnalyzer.is_uniform(values) is True
 
 
+def test_analyzer_excludes_clouds_from_uniformity():
+    """Облачные пиксели не искажают однородность чистой части поля."""
+    ndvi = np.full((20, 20), 0.5, dtype=np.float32)
+    ndvi[:, :5] = np.tile([-1.0, 1.0, -1.0, 1.0, -1.0], (20, 1))
+    scl = np.full((20, 20), 4, dtype=np.uint8)
+    scl[:, :5] = 9
+
+    result = NdviFieldAnalyzer().analyze(
+        ndvi,
+        date(2026, 7, 1),
+        field_id=42,
+        scl=scl,
+    )
+
+    assert result is not None
+    assert result.is_uniform is True
+
+
 def test_uniformity_rejects_empty_and_low_ndvi_fields():
     """Пустое поле и поле с низким NDVI не считаются однородными."""
     assert NdviFieldAnalyzer.is_uniform(np.zeros((20, 20))) is False

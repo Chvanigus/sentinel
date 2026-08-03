@@ -37,6 +37,8 @@ AGROIDS_BY_TILE: dict[str, tuple[int, ...]] = {
     "t38ulb": (1, 5, 6),
 }
 
+PROCESSING_ALGORITHM_VERSION = "3.0.0"
+
 
 @dataclass(frozen=True)
 class BandOffsets:
@@ -90,6 +92,7 @@ class SceneContext:
         """Дата в историческом формате имён файлов проекта."""
         return self.acquired_on.strftime("%d_%m_%Y")
 
+
 @dataclass(frozen=True)
 class ArchivePair:
     """Пара соседних ULA/ULB архивов за одну дату."""
@@ -98,6 +101,9 @@ class ArchivePair:
     prefix: str
     ula: Path
     ulb: Path
+    level: ProductLevel = ProductLevel.L2A
+    processing_baseline: int | None = None
+    satellite: str = "s2a"
 
     @property
     def acquired_on(self) -> date:

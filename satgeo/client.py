@@ -51,7 +51,7 @@ class GeoServerClient:
             create_layer=True,
             layer_name=None,
             source_name=None,
-    ):
+    ) -> bool:
         """
         Создаём coverage store в GeoServer.
 
@@ -83,7 +83,7 @@ class GeoServerClient:
                 "%s уже существует - пропуск создания...",
                 store_name
             )
-            return
+            return False
 
         self.logger.info("Создаём store: %s", store_name)
 
@@ -125,6 +125,7 @@ class GeoServerClient:
         self.cat._cache.clear()
 
         self.logger.info("Store %s успешно создан", store_name)
+        return True
 
     def set_layer_style(self, layer_name: str, style_name: str) -> None:
         """Устанавливаем стиль для слоя."""

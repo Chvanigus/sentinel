@@ -4,16 +4,16 @@ from __future__ import annotations
 import os
 from time import perf_counter
 
+from core.logging import get_logger
 from domain.models import Field
 from processing.domain import ProductLevel
 from processing.ndvi import NdviFieldAnalyzer
 from processing.ports import FieldDataProvider
-from processing.processors.base import BaseImageProcessor
 from processing.raster import clip_by_mask_array, clip_by_mask_with_coverage
 from processing.storage import FieldGeometryExporter
 
 
-class NdviStatisticsProcessor(BaseImageProcessor):
+class NdviStatisticsProcessor:
     """Класс для сбора и анализа статистики NDVI по спутниковым снимкам."""
 
     def __init__(self,
@@ -24,7 +24,9 @@ class NdviStatisticsProcessor(BaseImageProcessor):
                  nodata: float,
                  overwrite: bool = False,
                  ) -> None:
-        super().__init__(scene, paths)
+        self.scene = scene
+        self.paths = paths
+        self.logger = get_logger(self.__class__.__name__)
         self.field_data = field_data
         self.geometry_exporter = geometry_exporter
         self.nodata = nodata

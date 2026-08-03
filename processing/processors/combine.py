@@ -3,12 +3,12 @@ import os
 
 from osgeo import gdal
 
+from core.logging import get_logger
 from processing.dataset import atomic_raster_path
 from processing.domain import ProductLevel
-from processing.processors.base import BaseImageProcessor
 
 
-class MosaicProcessor(BaseImageProcessor):
+class MosaicProcessor:
     """
     Универсальный класс для объединения готовых TIFF‑тайлов
     (для agroid=1 и любых других сценариев).
@@ -22,7 +22,9 @@ class MosaicProcessor(BaseImageProcessor):
     }
 
     def __init__(self, scene, paths, products=None):
-        super().__init__(scene, paths)
+        self.scene = scene
+        self.paths = paths
+        self.logger = get_logger(self.__class__.__name__)
         self.products = frozenset(products or self.PRODUCT_SIZES)
         unknown = self.products - self.PRODUCT_SIZES.keys()
         if unknown:

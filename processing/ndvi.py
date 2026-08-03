@@ -118,7 +118,7 @@ class NdviFieldAnalyzer:
             minimum=float(np.min(values)) if values.size else None,
             growth_percent=None,
             coefficient_of_variation=coefficient_of_variation,
-            is_uniform=self.is_uniform(ndvi_array, coverage),
+            is_uniform=self.is_uniform(ndvi_array, valid_mask),
             valid_pixel_count=valid_pixel_count,
             total_pixel_count=total_pixel_count,
             cloud_pixel_count=cloud_pixel_count,

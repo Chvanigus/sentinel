@@ -118,10 +118,10 @@ def test_missing_agroids_requires_all_published_layer_types():
         def rows(self, *_args, **_kwargs):
             """Возвращает частично опубликованные типы слоёв."""
             return [
-                {"agroid": 1, "set": "ndvi"},
-                {"agroid": 1, "set": "ndwi"},
-                {"agroid": 1, "set": "tci"},
-                {"agroid": 3, "set": "ndvi"},
+                {"date": date(2026, 7, 1), "agroid": 1, "set": "ndvi"},
+                {"date": date(2026, 7, 1), "agroid": 1, "set": "ndwi"},
+                {"date": date(2026, 7, 1), "agroid": 1, "set": "tci"},
+                {"date": date(2026, 7, 1), "agroid": 3, "set": "ndvi"},
             ]
 
     repository = LayerRepository(Gateway())
@@ -144,9 +144,9 @@ def test_layer_add_relies_on_single_idempotent_insert():
             """Сообщает о запрещённом предварительном чтении."""
             raise AssertionError("Предварительный SELECT не требуется")
 
-        def insert_one(self, *args, **kwargs):
-            """Запоминает идемпотентную вставку."""
-            self.calls.append((args, kwargs))
+        def execute(self, query, params):
+            """Запоминает идемпотентную вставку с обновлением метаданных."""
+            self.calls.append((query, params))
 
     gateway = Gateway()
     LayerRepository(gateway).add(
@@ -159,7 +159,8 @@ def test_layer_add_relies_on_single_idempotent_insert():
     )
 
     assert len(gateway.calls) == 1
-    assert gateway.calls[0][1]["conflict_fields"] == "name"
+    assert "ON CONFLICT (name) DO UPDATE" in gateway.calls[0][0]
+    assert gateway.calls[0][1][4] == "sentinel:a3_ndvi_2026-07-01"
 
 
 def test_field_repository_reads_geometry_batch_in_one_scope():

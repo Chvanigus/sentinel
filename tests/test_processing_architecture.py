@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from processing import pair_processor as pair_processor_module
 from processing.archive import ArchiveMetadata
 from processing.discovery import ArchiveName, ArchivePairFinder
 from processing.domain import (
@@ -14,21 +15,9 @@ from processing.domain import (
     ProductLevel,
     SceneContext,
 )
-from processing.exceptions import ProcessingRunError, ProcessingStepError
-from processing.pipeline import ScenePipeline, SceneStep
+from processing.exceptions import ProcessingRunError
 from processing.service import ProcessingService
-
-
-def scene() -> SceneContext:
-    """Создаёт тестовый контекст L2A-сцены."""
-    return SceneContext(
-        archive_path=Path("scene.zip"),
-        tile="t38ula",
-        acquired_on=date(2026, 7, 1),
-        satellite="s2a",
-        level=ProductLevel.L2A,
-        agroids=(1, 3, 4),
-    )
+from processing.workspace import ProcessingOptions, WorkspacePaths
 
 
 def pair(day: int) -> ArchivePair:
@@ -113,20 +102,106 @@ def test_scene_context_is_created_from_archive_metadata():
     assert context.agroids == (1, 3, 4)
 
 
-def test_scene_pipeline_preserves_order_and_names_failure():
-    """Pipeline сохраняет порядок и указывает имя упавшего шага."""
-    calls = []
-    pipeline = ScenePipeline(
-        [
-            SceneStep("first", lambda _scene: calls.append("first")),
-            SceneStep("second", lambda _scene: False),
-        ]
+def test_pair_processor_runs_shared_steps_once(monkeypatch):
+    """Общие этапы даты выполняются один раз после подготовки двух тайлов."""
+    events = []
+
+    class Archive:
+        """Имитирует чтение и распаковку архива Sentinel."""
+
+        def __init__(self, path):
+            self.path = Path(path)
+            tile = "T38ULA" if "ula" in self.path.name else "T38ULB"
+            self.metadata = ArchiveMetadata(
+                satellite="S2A",
+                date=date(2026, 7, 1),
+                tile=tile,
+                level="MSIL2A",
+            )
+
+        def read_band_offsets(self):
+            """Возвращает нулевые radiometric offsets."""
+            return None
+
+        def extract(self, _root, _bands):
+            """Фиксирует распаковку тестового архива."""
+            events.append(("extract", self.metadata.tile.lower()))
+            return Path("extracted")
+
+    def processor(step_name):
+        """Создаёт тестовый процессор, фиксирующий запуск этапа."""
+
+        class Processor:
+            """Запоминает контекст выполненного этапа."""
+
+            def __init__(self, scene_context, *_args, **_kwargs):
+                self.scene = scene_context
+
+            def run(self):
+                """Добавляет запуск этапа в журнал."""
+                events.append((step_name, self.scene.tile))
+
+        return Processor
+
+    monkeypatch.setattr(pair_processor_module, "SentinelArchive", Archive)
+    monkeypatch.setattr(
+        pair_processor_module,
+        "TileImageProcessor",
+        processor("tile"),
     )
+    monkeypatch.setattr(
+        pair_processor_module,
+        "AgroCropProcessor",
+        processor("crop"),
+    )
+    monkeypatch.setattr(
+        pair_processor_module,
+        "MosaicProcessor",
+        processor("combine"),
+    )
+    monkeypatch.setattr(
+        pair_processor_module,
+        "RescaleSCLProcessor",
+        processor("rescale-scl"),
+    )
+    monkeypatch.setattr(
+        pair_processor_module,
+        "FilterNDVIProcessor",
+        processor("filter-ndvi"),
+    )
+    monkeypatch.setattr(
+        pair_processor_module,
+        "NdviStatisticsProcessor",
+        processor("statistics"),
+    )
+    workspace = WorkspacePaths(*(Path(name) for name in (
+        "temporary",
+        "intermediate",
+        "processed",
+        "ndvi",
+        "geoware",
+    )))
+    pair_processor_module.SentinelPairProcessor(
+        temporary_root="temporary",
+        workspace=workspace,
+        options=ProcessingOptions(3857, -9999.0),
+        field_data=object(),
+        output_archive=object(),
+        geometry_exporter=object(),
+    ).process(pair(1))
 
-    with pytest.raises(ProcessingStepError, match="second"):
-        pipeline.run(scene())
-
-    assert calls == ["first"]
+    assert events == [
+        ("extract", "t38ula"),
+        ("tile", "t38ula"),
+        ("crop", "t38ula"),
+        ("extract", "t38ulb"),
+        ("tile", "t38ulb"),
+        ("crop", "t38ulb"),
+        ("combine", "t38ula"),
+        ("rescale-scl", "t38ula"),
+        ("filter-ndvi", "t38ula"),
+        ("statistics", "t38ula"),
+    ]
 
 
 def test_processing_service_coordinates_ports_without_infrastructure():
@@ -142,9 +217,12 @@ def test_processing_service_coordinates_ports_without_infrastructure():
     class Status:
         """Имитирует состояние публикации по дате."""
 
-        def get_missing_agroids(self, acquired_on):
+        def get_missing_agroids_many(self, acquired_dates):
             """Помечает первый день завершённым, а второй незавершённым."""
-            return [] if acquired_on.day == 1 else [3]
+            return {
+                acquired_on: ([] if acquired_on.day == 1 else [3])
+                for acquired_on in acquired_dates
+            }
 
     class Processor:
         """Запоминает переданные в обработку архивы."""
@@ -152,16 +230,16 @@ def test_processing_service_coordinates_ports_without_infrastructure():
         def __init__(self):
             self.archives = []
 
-        def process(self, archive):
-            """Регистрирует обработанный архив."""
-            self.archives.append(archive)
+        def process(self, archive_pair):
+            """Регистрирует обработанную пару архивов."""
+            self.archives.append(archive_pair)
 
     class Publisher:
         """Считает вызовы публикации."""
 
         calls = 0
 
-        def publish_date(self, _acquired_on):
+        def publish_date(self, _acquired_on, _source):
             """Увеличивает счётчик публикаций."""
             self.calls += 1
 
@@ -170,7 +248,7 @@ def test_processing_service_coordinates_ports_without_infrastructure():
 
         calls = 0
 
-        def clean(self):
+        def clean(self, _acquired_on):
             """Увеличивает счётчик очисток."""
             self.calls += 1
 
@@ -181,14 +259,14 @@ def test_processing_service_coordinates_ports_without_infrastructure():
         archive_root="/archive",
         pair_finder=Finder(),
         status_reader=Status(),
-        scene_processor=processor,
+        pair_processor=processor,
         publisher=publisher,
         cleaner=cleaner,
     )
 
     summary = service.run()
 
-    assert processor.archives == [Path("2-ula.zip"), Path("2-ulb.zip")]
+    assert processor.archives == [pair(2)]
     assert publisher.calls == 1
     assert cleaner.calls == 1
     assert summary.discovered == 2
@@ -196,8 +274,8 @@ def test_processing_service_coordinates_ports_without_infrastructure():
     assert summary.skipped == 1
 
 
-def test_processing_service_collects_failures_and_cleans_each_date():
-    """Service агрегирует ошибки и очищает workspace после каждой даты."""
+def test_processing_service_preserves_failed_date_and_cleans_successful_date():
+    """Service сохраняет staging упавшей даты и очищает успешную дату."""
 
     class Finder:
         """Возвращает две тестовые пары."""
@@ -209,16 +287,16 @@ def test_processing_service_collects_failures_and_cleans_each_date():
     class Status:
         """Помечает все пары требующими обработки."""
 
-        def get_missing_agroids(self, _acquired_on):
-            """Возвращает незавершённое хозяйство."""
-            return [1]
+        def get_missing_agroids_many(self, acquired_dates):
+            """Возвращает незавершённое хозяйство для каждой даты."""
+            return {acquired_on: [1] for acquired_on in acquired_dates}
 
     class Processor:
         """Имитирует ошибку первой даты."""
 
-        def process(self, archive):
-            """Падает на архивах первого дня."""
-            if archive.name.startswith("1-"):
+        def process(self, archive_pair):
+            """Падает на паре архивов первого дня."""
+            if archive_pair.acquired_on.day == 1:
                 raise RuntimeError("broken scene")
 
     class Publisher:
@@ -226,7 +304,7 @@ def test_processing_service_collects_failures_and_cleans_each_date():
 
         calls = 0
 
-        def publish_date(self, _acquired_on):
+        def publish_date(self, _acquired_on, _source):
             """Увеличивает счётчик публикаций."""
             self.calls += 1
 
@@ -235,8 +313,8 @@ def test_processing_service_collects_failures_and_cleans_each_date():
 
         calls = 0
 
-        def clean(self):
-            """Увеличивает счётчик очисток."""
+        def clean(self, _acquired_on):
+            """Увеличивает счётчик очисток успешных дат."""
             self.calls += 1
 
     publisher = Publisher()
@@ -245,7 +323,7 @@ def test_processing_service_collects_failures_and_cleans_each_date():
         archive_root="/archive",
         pair_finder=Finder(),
         status_reader=Status(),
-        scene_processor=Processor(),
+        pair_processor=Processor(),
         publisher=publisher,
         cleaner=cleaner,
     )
@@ -254,7 +332,7 @@ def test_processing_service_collects_failures_and_cleans_each_date():
         service.run()
 
     assert publisher.calls == 1
-    assert cleaner.calls == 2
+    assert cleaner.calls == 1
 
 
 def test_recalculation_processes_completed_dates_and_cleans_before_work():
@@ -270,7 +348,7 @@ def test_recalculation_processes_completed_dates_and_cleans_before_work():
     class Status:
         """Запрещает обращаться к статусу в принудительном режиме."""
 
-        def get_missing_agroids(self, _acquired_on):
+        def get_missing_agroids_many(self, _acquired_dates):
             """Сообщает о недопустимом вызове."""
             raise AssertionError("Статус не должен ограничивать перерасчёт")
 
@@ -279,29 +357,29 @@ def test_recalculation_processes_completed_dates_and_cleans_before_work():
     class Processor:
         """Фиксирует обработку архивов."""
 
-        def process(self, archive):
-            """Добавляет архив в журнал."""
-            events.append(("process", archive))
+        def process(self, archive_pair):
+            """Добавляет пару архивов в журнал."""
+            events.append(("process", archive_pair))
 
     class Publisher:
         """Фиксирует публикацию даты."""
 
-        def publish_date(self, acquired_on):
+        def publish_date(self, acquired_on, _source):
             """Добавляет публикацию в журнал."""
             events.append(("publish", acquired_on))
 
     class Cleaner:
         """Фиксирует очистку до и после обработки."""
 
-        def clean(self):
+        def clean(self, acquired_on):
             """Добавляет очистку в журнал."""
-            events.append(("clean", None))
+            events.append(("clean", acquired_on))
 
     service = ProcessingService(
         archive_root="/archive",
         pair_finder=Finder(),
         status_reader=Status(),
-        scene_processor=Processor(),
+        pair_processor=Processor(),
         publisher=Publisher(),
         cleaner=Cleaner(),
         process_completed=True,
@@ -311,11 +389,10 @@ def test_recalculation_processes_completed_dates_and_cleans_before_work():
     summary = service.run()
 
     assert events == [
-        ("clean", None),
-        ("process", Path("1-ula.zip")),
-        ("process", Path("1-ulb.zip")),
+        ("clean", date(2026, 7, 1)),
+        ("process", pair(1)),
         ("publish", date(2026, 7, 1)),
-        ("clean", None),
+        ("clean", date(2026, 7, 1)),
     ]
     assert summary.processed == 1
     assert summary.skipped == 0
@@ -327,7 +404,7 @@ def test_application_modules_do_not_import_infrastructure():
     modules = [
         root / "processing" / "domain.py",
         root / "processing" / "discovery.py",
-        root / "processing" / "pipeline.py",
+        root / "processing" / "pair_processor.py",
         root / "processing" / "service.py",
         root / "processing" / "paths.py",
     ]
@@ -361,6 +438,8 @@ def test_removed_facades_do_not_return():
         root / "db" / "data_class.py",
         root / "db" / "connect_data.py",
         root / "processing" / "orchestrator.py",
+        root / "processing" / "pipeline.py",
+        root / "processing" / "processors" / "base.py",
         root / "satgeo" / "public.py",
         root / "satgeo" / "utils.py",
         root / "cdse" / "orchestrator.py",

@@ -87,7 +87,6 @@ class Command(BaseCommand):
             collection=L2A_COLLECTION,
             start=start,
             end=end,
-            do_download=do_download,
             tiles=TARGET_TILES,
             archive_index=archive_index,
             product_type=L2A_PRODUCT_TYPE,

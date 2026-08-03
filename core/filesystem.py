@@ -26,3 +26,29 @@ def clear_directory_contents(*directories: str | Path) -> None:
             else:
                 child.unlink()
             logger.info("Удалено: %s", child)
+
+
+def clear_directory_entries_matching(
+        directory: str | Path,
+        *name_fragments: str,
+) -> None:
+    """Удаляет из каталога только элементы, содержащие заданные фрагменты имени."""
+    root = Path(directory).resolve()
+    if root == Path(root.anchor):
+        raise ValueError(f"Отказ очищать корень файловой системы: {directory}")
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise NotADirectoryError(root)
+    fragments = tuple(fragment for fragment in name_fragments if fragment)
+    if not fragments:
+        raise ValueError("Для выборочной очистки требуется фрагмент имени")
+
+    for child in root.iterdir():
+        if not any(fragment in child.name for fragment in fragments):
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+        logger.info("Удалено: %s", child)
