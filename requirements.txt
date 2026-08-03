@@ -7,5 +7,4 @@ opencv-python-headless>=4.12,<5
 psycopg2-binary>=2.9,<3
 python-dotenv>=1.0,<2
 requests[socks]>=2.32,<3
-scipy>=1.15,<2
 tqdm>=4.64,<5

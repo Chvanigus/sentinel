@@ -5,15 +5,10 @@ from datetime import UTC, date, datetime
 
 import cv2
 import numpy as np
-from scipy.ndimage import binary_erosion
 
 from domain.models import NdviStatistics
 
 NDVI_ALGORITHM_VERSION = "2.0.0"
-CLOUD_SCL_CLASSES = (8, 9, 10)
-SHADOW_SCL_CLASSES = (2, 3)
-SNOW_SCL_CLASSES = (11,)
-CLEAR_SCL_CLASSES = (4, 5, 6, 7)
 
 
 class NdviFieldAnalyzer:
@@ -67,22 +62,12 @@ class NdviFieldAnalyzer:
                 raise ValueError(
                     "SCL и NDVI должны иметь одинаковую форму"
                 )
-            cloud_mask = coverage & np.isin(
-                scl_array,
-                CLOUD_SCL_CLASSES,
-            )
-            shadow_mask = coverage & np.isin(
-                scl_array,
-                SHADOW_SCL_CLASSES,
-            )
-            snow_mask = coverage & np.isin(
-                scl_array,
-                SNOW_SCL_CLASSES,
-            )
-            clear_mask = coverage & np.isin(
-                scl_array,
-                CLEAR_SCL_CLASSES,
-            )
+            # Классы SCL образуют компактные диапазоны; прямые сравнения
+            # заметно дешевле четырёх отдельных вызовов np.isin на поле.
+            cloud_mask = coverage & (scl_array >= 8) & (scl_array <= 10)
+            shadow_mask = coverage & (scl_array >= 2) & (scl_array <= 3)
+            snow_mask = coverage & (scl_array == 11)
+            clear_mask = coverage & (scl_array >= 4) & (scl_array <= 7)
             valid_mask &= clear_mask
             excluded_mask = cloud_mask | shadow_mask | snow_mask
             cloud_pixel_count = int(np.count_nonzero(cloud_mask))
@@ -109,6 +94,12 @@ class NdviFieldAnalyzer:
             if mean not in (None, 0.0)
             else None
         )
+        percentile_10 = None
+        percentile_90 = None
+        if values.size:
+            percentiles = np.percentile(values, (10, 90))
+            percentile_10 = float(percentiles[0])
+            percentile_90 = float(percentiles[1])
 
         return NdviStatistics(
             acquired_on=acquired_on,
@@ -129,12 +120,8 @@ class NdviFieldAnalyzer:
             cloud_coverage_percent=cloud_coverage_percent,
             standard_deviation=standard_deviation,
             median=float(np.median(values)) if values.size else None,
-            percentile_10=(
-                float(np.percentile(values, 10)) if values.size else None
-            ),
-            percentile_90=(
-                float(np.percentile(values, 90)) if values.size else None
-            ),
+            percentile_10=percentile_10,
+            percentile_90=percentile_90,
             source_level=source_level,
             algorithm_version=NDVI_ALGORITHM_VERSION,
             calculated_at=datetime.now(UTC),
@@ -165,10 +152,12 @@ class NdviFieldAnalyzer:
         if not np.any(valid_mask):
             return False
 
-        eroded_mask = binary_erosion(
-            valid_mask,
-            structure=np.ones((5, 5)),
-        )
+        eroded_mask = cv2.erode(
+            valid_mask.astype(np.uint8, copy=False),
+            np.ones((5, 5), dtype=np.uint8),
+            borderType=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        ).astype(bool, copy=False)
         values = ndvi_array[eroded_mask]
         if values.size == 0:
             return False

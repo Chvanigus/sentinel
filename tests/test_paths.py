@@ -185,8 +185,8 @@ def test_mosaic_paths_sort_tiles_and_select_destination_root(tmp_path):
         paths.destination("b04")
 
 
-def test_cloud_mask_paths_form_complete_processing_contract(tmp_path):
-    """Cloud-mask resolver согласует имена всех входов и результатов."""
+def test_cloud_mask_paths_form_rescale_contract(tmp_path):
+    """SCL-resolver согласует имена исходной и приведённой масок."""
     current_workspace = workspace(tmp_path)
     paths = CloudMaskPaths(
         scene(ProductLevel.L2A),
@@ -204,10 +204,6 @@ def test_cloud_mask_paths_form_complete_processing_contract(tmp_path):
     assert Path(paths.scl_10m(4)) == (
         current_workspace.processed
         / "s2a_01_07_2026_a4_scl_10m_3857.tif"
-    )
-    assert Path(paths.filtered_ndvi(4)) == (
-        current_workspace.intermediate
-        / "s2a_01_07_2026_a4_ndvi_10m_3857_filtered.tif"
     )
 
 
@@ -239,8 +235,8 @@ def test_l1c_statistics_uses_unfiltered_processed_ndvi(tmp_path):
     )
 
 
-def test_l2a_statistics_uses_cloud_filtered_ndvi(tmp_path):
-    """Статистика L2A читает NDVI после фильтрации по SCL."""
+def test_l2a_statistics_uses_visual_ndvi_and_separate_scl(tmp_path):
+    """Статистика L2A читает визуальный NDVI и отдельную SCL-маску."""
     paths = NdviStatisticsPaths(
         scene(ProductLevel.L2A),
         workspace(tmp_path),
@@ -248,8 +244,8 @@ def test_l2a_statistics_uses_cloud_filtered_ndvi(tmp_path):
 
     assert Path(paths.ndvi_source(1)) == (
         tmp_path
-        / "intermediate"
-        / "s2a_01_07_2026_a1_ndvi_10m_3857_filtered.tif"
+        / "processed"
+        / "s2a_01_07_2026_a1_ndvi_10m_3857.tif"
     )
     assert Path(paths.scl_source(1)) == (
         tmp_path

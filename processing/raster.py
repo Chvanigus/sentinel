@@ -1,13 +1,18 @@
 """Атомарные операции преобразования и вырезки растров GDAL."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from osgeo import gdal
 
-from processing.dataset import atomic_raster_path, open_raster
+from processing.dataset import (
+    atomic_raster_path,
+    ensure_same_grid,
+    open_raster,
+)
 
 TRANSLATE_OPTIONS = (
     "TILED=YES",
@@ -21,10 +26,11 @@ WARP_OPTIONS = ("CUTLINE_ALL_TOUCHED=TRUE", "NUM_THREADS=ALL_CPUS")
 
 @dataclass(frozen=True)
 class RasterClip:
-    """Массив вырезанного растра и точная маска пикселей полигона."""
+    """NDVI, опциональная SCL и точная маска пикселей одного поля."""
 
     values: np.ndarray
     coverage: np.ndarray
+    scl: np.ndarray | None = None
 
 
 def _resolution(
@@ -62,101 +68,123 @@ def translate_to_geotiff(
         result = None
 
 
-def clip_by_mask_array(
-        source: str | Path,
-        mask: str | Path,
-        *,
-        x_resolution: float | None = None,
-        y_resolution: float | None = None,
-        nodata: float | None = None,
-) -> np.ndarray:
-    """Обрезает растр в памяти и возвращает массив без временного TIFF."""
-    with open_raster(source) as dataset:
-        x_resolution, y_resolution = _resolution(
-            dataset,
-            x_resolution,
-            y_resolution,
+class FieldRasterReader:
+    """Открывает растры хозяйства один раз и вырезает оба канала одним Warp."""
+
+    def __init__(
+            self,
+            ndvi_path: str | Path,
+            *,
+            scl_path: str | Path | None = None,
+            nodata: float = -9999.0,
+    ) -> None:
+        self.ndvi_path = Path(ndvi_path)
+        self.scl_path = Path(scl_path) if scl_path is not None else None
+        self.nodata = nodata
+        self._stack: ExitStack | None = None
+        self._source = None
+        self._vrt = None
+        self._vrt_path = f"/vsimem/field-reader-{id(self)}.vrt"
+
+    def __enter__(self) -> FieldRasterReader:
+        """Открывает NDVI/SCL и создаёт общий VRT на согласованной сетке."""
+        self._stack = ExitStack()
+        ndvi = self._stack.enter_context(open_raster(self.ndvi_path))
+        self._source = ndvi
+        if self.scl_path is not None:
+            scl = self._stack.enter_context(open_raster(self.scl_path))
+            ensure_same_grid(ndvi, scl, "SCL")
+            self._vrt = gdal.BuildVRT(
+                self._vrt_path,
+                [ndvi, scl],
+                separate=True,
+            )
+            if self._vrt is None:
+                self.close()
+                raise RuntimeError("GDAL не смог собрать общий NDVI/SCL VRT")
+            self._source = self._vrt
+        return self
+
+    def __exit__(self, _exc_type, _exc_val, _exc_tb) -> None:
+        """Освобождает VRT и исходные наборы данных хозяйства."""
+        self.close()
+
+    def close(self) -> None:
+        """Идемпотентно закрывает все открытые GDAL-ресурсы."""
+        has_vrt = self._vrt is not None
+        self._source = None
+        self._vrt = None
+        if has_vrt:
+            gdal.Unlink(self._vrt_path)
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
+
+    def clip(self, mask: str | Path) -> RasterClip:
+        """Вырезает NDVI/SCL поля одним Warp и строит точную coverage-маску."""
+        if self._source is None:
+            raise RuntimeError("FieldRasterReader должен быть открыт")
+        x_resolution, y_resolution = _resolution(self._source, None, None)
+        nodata = (
+            [self.nodata, 0]
+            if self.scl_path is not None
+            else self.nodata
         )
         result = gdal.Warp(
             "",
-            dataset,
+            self._source,
             format="MEM",
             cutlineDSName=str(mask),
             cropToCutline=True,
             xRes=x_resolution,
             yRes=y_resolution,
-            dstSRS=dataset.GetProjection(),
+            dstSRS=self._source.GetProjection(),
             srcNodata=nodata,
             dstNodata=nodata,
             multithread=True,
-            warpOptions=[
-                *WARP_OPTIONS,
-                "INIT_DEST=NO_DATA",
-            ],
+            warpOptions=[*WARP_OPTIONS, "INIT_DEST=NO_DATA"],
         )
         if result is None:
-            raise RuntimeError(f"GDAL не смог обрезать изображение {source}")
+            raise RuntimeError(f"GDAL не смог обрезать изображение {mask}")
         try:
-            array = result.ReadAsArray()
-            if array is None:
+            arrays = result.ReadAsArray()
+            if arrays is None:
                 raise RuntimeError(
-                    f"GDAL не смог прочитать вырезанный растр {source}"
+                    f"GDAL не смог прочитать вырезанный растр {mask}"
                 )
-            return np.asarray(array, dtype=np.float32)
+            values, scl = self._split_arrays(arrays)
+            return RasterClip(
+                values=values,
+                coverage=self._coverage(result, mask),
+                scl=scl,
+            )
         finally:
             result = None
 
+    def _split_arrays(
+            self,
+            arrays: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """Разделяет результат Warp на NDVI и опциональную SCL."""
+        values = np.asarray(arrays, dtype=np.float32)
+        if self.scl_path is None:
+            return values, None
+        if values.ndim != 3 or values.shape[0] != 2:
+            raise RuntimeError(
+                f"Ожидались два канала NDVI/SCL, получена форма {values.shape}"
+            )
+        return values[0], values[1]
 
-def clip_by_mask_with_coverage(
-        source: str | Path,
-        mask: str | Path,
-        *,
-        x_resolution: float | None = None,
-        y_resolution: float | None = None,
-        nodata: float | None = None,
-) -> RasterClip:
-    """Вырезает растр и отдельно растеризует точную область поля."""
-    with open_raster(source) as dataset:
-        x_resolution, y_resolution = _resolution(
-            dataset,
-            x_resolution,
-            y_resolution,
-        )
-        result = gdal.Warp(
-            "",
-            dataset,
-            format="MEM",
-            cutlineDSName=str(mask),
-            cropToCutline=True,
-            xRes=x_resolution,
-            yRes=y_resolution,
-            dstSRS=dataset.GetProjection(),
-            srcNodata=nodata,
-            dstNodata=nodata,
-            multithread=True,
-            warpOptions=[
-                *WARP_OPTIONS,
-                "INIT_DEST=NO_DATA",
-            ],
-        )
-        if result is None:
-            raise RuntimeError(f"GDAL не смог обрезать изображение {source}")
-
-        vector = None
+    @staticmethod
+    def _coverage(result, mask: str | Path) -> np.ndarray:
+        """Растеризует точную область поля на сетку вырезанного NDVI."""
+        vector = gdal.OpenEx(str(mask), gdal.OF_VECTOR)
+        if vector is None:
+            raise RuntimeError(f"GDAL не смог открыть маску {mask}")
         coverage_dataset = None
         try:
-            values = result.ReadAsArray()
-            if values is None:
-                raise RuntimeError(
-                    f"GDAL не смог прочитать вырезанный растр {source}"
-                )
-
-            vector = gdal.OpenEx(str(mask), gdal.OF_VECTOR)
-            if vector is None:
-                raise RuntimeError(f"GDAL не смог открыть маску {mask}")
             layer = vector.GetLayer()
-            driver = gdal.GetDriverByName("MEM")
-            coverage_dataset = driver.Create(
+            coverage_dataset = gdal.GetDriverByName("MEM").Create(
                 "",
                 result.RasterXSize,
                 result.RasterYSize,
@@ -183,11 +211,7 @@ def clip_by_mask_with_coverage(
                 raise RuntimeError(
                     f"GDAL не смог прочитать растровую маску {mask}"
                 )
-            return RasterClip(
-                values=np.asarray(values, dtype=np.float32),
-                coverage=np.asarray(coverage, dtype=bool),
-            )
+            return np.asarray(coverage, dtype=bool)
         finally:
             coverage_dataset = None
             vector = None
-            result = None

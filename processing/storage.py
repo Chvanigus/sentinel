@@ -18,6 +18,22 @@ class GeowareTileArchive:
         self.root = Path(root)
         self.logger = get_logger(self.__class__.__name__)
 
+    def _archive_path(
+            self,
+            scene: SceneContext,
+            filename: str,
+            product: str,
+    ) -> Path:
+        """Строит путь долговременной tile-level копии продукта."""
+        return (
+            self.root
+            / str(scene.acquired_on.year)
+            / scene.tile.upper()
+            / product.lower()
+            / f"{scene.acquired_on.month:02d}"
+            / filename
+        )
+
     def store(
             self,
             scene: SceneContext,
@@ -28,15 +44,12 @@ class GeowareTileArchive:
         source_path = Path(source)
         if not source_path.is_file():
             raise FileNotFoundError(source_path)
-        destination_dir = (
-            self.root
-            / str(scene.acquired_on.year)
-            / scene.tile.upper()
-            / product.lower()
-            / f"{scene.acquired_on.month:02d}"
+        destination = self._archive_path(
+            scene,
+            source_path.name,
+            product,
         )
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / source_path.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
             source_stat = source_path.stat()
             destination_stat = destination.stat()
@@ -71,6 +84,46 @@ class GeowareTileArchive:
             destination,
         )
         return destination
+
+    def restore(
+            self,
+            scene: SceneContext,
+            destination: str | Path,
+            product: str,
+    ) -> bool:
+        """Восстанавливает tile-level продукт из архива без повторного GDAL."""
+        destination_path = Path(destination)
+        if destination_path.is_file():
+            return True
+        source = self._archive_path(
+            scene,
+            destination_path.name,
+            product,
+        )
+        if not source.is_file():
+            return False
+
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination_path.with_suffix(
+            destination_path.suffix + ".partial"
+        )
+        temporary.unlink(missing_ok=True)
+        linked = False
+        try:
+            try:
+                os.link(source, temporary)
+                linked = True
+            except OSError:
+                shutil.copy2(source, temporary)
+            temporary.replace(destination_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        self.logger.info(
+            "Tile-level продукт восстановлен (%s): %s",
+            "hardlink" if linked else "copy",
+            destination_path,
+        )
+        return True
 
 
 class FieldGeometryExporter:

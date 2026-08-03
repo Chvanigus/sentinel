@@ -119,6 +119,31 @@ def test_tile_archive_falls_back_to_atomic_copy(tmp_path, monkeypatch):
     assert not copied_to[0].exists()
 
 
+def test_tile_archive_restores_cached_product(tmp_path):
+    """Повторный запуск восстанавливает готовый tile-level растр без GDAL."""
+    source = tmp_path / "source.tif"
+    source.write_bytes(b"cached-raster")
+    scene = SceneContext(
+        archive_path=Path("scene.zip"),
+        tile="t38ula",
+        acquired_on=date(2026, 7, 1),
+        satellite="s2a",
+        level=ProductLevel.L2A,
+        agroids=(1, 3, 4),
+    )
+    archive = GeowareTileArchive(tmp_path / "geoware")
+    archive.store(scene, source, "ndvi")
+    source.unlink()
+
+    assert archive.restore(scene, source, "ndvi") is True
+    assert source.read_bytes() == b"cached-raster"
+    assert archive.restore(
+        scene,
+        tmp_path / "missing.tif",
+        "ndvi",
+    ) is False
+
+
 def test_geometry_exporter_atomically_writes_geojson(tmp_path):
     """Экспортёр записывает валидный GeoJSON без временного остатка."""
     destination = tmp_path / "field.geojson"

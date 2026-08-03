@@ -1,10 +1,16 @@
 """Repositories предметных данных Sentinel."""
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from typing import Any
 
-from domain.models import Field, NdviStatistics, PublishedLayer
+from domain.models import (
+    Field,
+    LayerMetadataUpdate,
+    NdviStatistics,
+    PublishedLayer,
+)
 
 from .gateway import SqlGateway
 from .models import NdviRecord
@@ -19,20 +25,94 @@ class LayerRepository:
     def __init__(self, gateway: SqlGateway):
         self.gateway = gateway
 
-    def add(self, layer: PublishedLayer) -> None:
-        """Создаёт слой либо обновляет его изменяемые визуальные метаданные."""
+    def add_many(self, layers: list[PublishedLayer]) -> None:
+        """Одним запросом создаёт или обновляет опубликованные слои."""
+        if not layers:
+            return
+        payload = json.dumps(
+            [
+                {
+                    "acquired_on": layer.acquired_on.isoformat(),
+                    "product": layer.product,
+                    "agroid": layer.agroid,
+                    "name": layer.name,
+                    "acquired_at": (
+                        layer.acquired_at.isoformat()
+                        if layer.acquired_at is not None
+                        else None
+                    ),
+                    "satellite": layer.satellite,
+                    "source_level": layer.source_level,
+                    "processing_baseline": layer.processing_baseline,
+                    "source_tiles": layer.source_tiles,
+                    "cloud_coverage_percent": (
+                        layer.cloud_coverage_percent
+                    ),
+                    "valid_coverage_percent": (
+                        layer.valid_coverage_percent
+                    ),
+                    "resolution_m": layer.resolution_m,
+                    "is_cloud_masked": layer.is_cloud_masked,
+                    "algorithm_version": layer.algorithm_version,
+                    "generated_at": (
+                        layer.generated_at or datetime.now(UTC)
+                    ).isoformat(),
+                }
+                for layer in layers
+            ],
+            ensure_ascii=False,
+        )
         self.gateway.execute(
             """
+            WITH source AS (
+                SELECT *
+                FROM jsonb_to_recordset(%s::jsonb) AS item(
+                    acquired_on date,
+                    product varchar,
+                    agroid integer,
+                    name varchar,
+                    acquired_at timestamptz,
+                    satellite varchar,
+                    source_level varchar,
+                    processing_baseline integer,
+                    source_tiles jsonb,
+                    cloud_coverage_percent double precision,
+                    valid_coverage_percent double precision,
+                    resolution_m smallint,
+                    is_cloud_masked boolean,
+                    algorithm_version varchar,
+                    generated_at timestamptz
+                )
+            )
             INSERT INTO gpgeo.maps_layer (
                 date, fieldid, set, agroid, name, acquired_at, satellite,
                 source_level, processing_baseline, source_tiles,
                 cloud_coverage_percent, valid_coverage_percent,
                 resolution_m, is_cloud_masked, algorithm_version, generated_at
             )
-            VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s
-            )
+            SELECT
+                acquired_on,
+                NULL,
+                product,
+                agroid,
+                name,
+                acquired_at,
+                satellite,
+                source_level,
+                processing_baseline,
+                NULLIF(
+                    ARRAY(
+                        SELECT jsonb_array_elements_text(source_tiles)
+                    ),
+                    ARRAY[]::text[]
+                ),
+                cloud_coverage_percent,
+                valid_coverage_percent,
+                resolution_m,
+                is_cloud_masked,
+                algorithm_version,
+                generated_at
+            FROM source
             ON CONFLICT (name) DO UPDATE SET
                 acquired_at = EXCLUDED.acquired_at,
                 satellite = EXCLUDED.satellite,
@@ -46,24 +126,7 @@ class LayerRepository:
                 algorithm_version = EXCLUDED.algorithm_version,
                 generated_at = EXCLUDED.generated_at
             """,
-            (
-                layer.acquired_on,
-                None,
-                layer.product,
-                layer.agroid,
-                layer.name,
-                layer.acquired_at,
-                layer.satellite,
-                layer.source_level,
-                layer.processing_baseline,
-                list(layer.source_tiles) or None,
-                layer.cloud_coverage_percent,
-                layer.valid_coverage_percent,
-                layer.resolution_m,
-                layer.is_cloud_masked,
-                layer.algorithm_version,
-                layer.generated_at or datetime.now(UTC),
-            ),
+            (payload,),
         )
 
     def missing_agroids(self, acquired_on: date) -> list[int]:
@@ -103,6 +166,118 @@ class LayerRepository:
             ]
             for acquired_on in dates
         }
+
+    def refresh_metadata(
+            self,
+            updates: list[LayerMetadataUpdate],
+    ) -> int:
+        """Одним запросом обновляет метаданные существующих визуальных слоёв."""
+        if not updates:
+            return 0
+        payload = json.dumps(
+            [
+                {
+                    "acquired_on": item.acquired_on.isoformat(),
+                    "agroid": item.agroid,
+                    "acquired_at": item.acquired_at.isoformat(),
+                    "satellite": item.satellite,
+                    "source_level": item.source_level,
+                    "processing_baseline": item.processing_baseline,
+                    "source_tiles": item.source_tiles,
+                    "fallback_algorithm_version": (
+                        item.fallback_algorithm_version
+                    ),
+                    "resolution_m": item.resolution_m,
+                    "is_cloud_masked": item.is_cloud_masked,
+                }
+                for item in updates
+            ],
+            ensure_ascii=False,
+        )
+        row = self.gateway.row(
+            """
+            WITH source AS (
+                SELECT *
+                FROM jsonb_to_recordset(%s::jsonb) AS item(
+                    acquired_on date,
+                    agroid integer,
+                    acquired_at timestamptz,
+                    satellite varchar,
+                    source_level varchar,
+                    processing_baseline integer,
+                    source_tiles jsonb,
+                    fallback_algorithm_version varchar,
+                    resolution_m smallint,
+                    is_cloud_masked boolean
+                )
+            ),
+            quality AS (
+                SELECT
+                    source.acquired_on,
+                    source.agroid,
+                    SUM(ndvi.cloud_pixel_count) AS cloud_pixels,
+                    SUM(ndvi.valid_pixel_count) AS valid_pixels,
+                    SUM(ndvi.total_pixel_count) AS total_pixels
+                FROM source
+                LEFT JOIN LATERAL
+                    gpgeo.__geo_get_fieldnames_for_agro_year(
+                        source.agroid,
+                        EXTRACT(YEAR FROM source.acquired_on)::integer
+                    ) AS field
+                    ON true
+                LEFT JOIN gpgeo.maps_ndvi_values AS ndvi
+                    ON ndvi.date = source.acquired_on
+                    AND ndvi.fieldid = field.id
+                GROUP BY source.acquired_on, source.agroid
+            ),
+            updated AS (
+                UPDATE gpgeo.maps_layer AS layer
+                SET
+                    acquired_at = source.acquired_at,
+                    satellite = source.satellite,
+                    source_level = source.source_level,
+                    processing_baseline = source.processing_baseline,
+                    source_tiles = NULLIF(
+                        ARRAY(
+                            SELECT jsonb_array_elements_text(
+                                source.source_tiles
+                            )
+                        ),
+                        ARRAY[]::text[]
+                    ),
+                    cloud_coverage_percent = CASE
+                        WHEN quality.total_pixels > 0
+                             AND quality.cloud_pixels IS NOT NULL
+                        THEN quality.cloud_pixels::double precision
+                             / quality.total_pixels * 100
+                        ELSE NULL
+                    END,
+                    valid_coverage_percent = CASE
+                        WHEN quality.total_pixels > 0
+                             AND quality.valid_pixels IS NOT NULL
+                        THEN quality.valid_pixels::double precision
+                             / quality.total_pixels * 100
+                        ELSE NULL
+                    END,
+                    resolution_m = source.resolution_m,
+                    is_cloud_masked = source.is_cloud_masked,
+                    algorithm_version = COALESCE(
+                        layer.algorithm_version,
+                        source.fallback_algorithm_version
+                    )
+                FROM source
+                JOIN quality
+                    ON quality.acquired_on = source.acquired_on
+                    AND quality.agroid = source.agroid
+                WHERE layer.date = source.acquired_on
+                  AND layer.agroid = source.agroid
+                RETURNING layer.id
+            )
+            SELECT COUNT(*) AS updated_count FROM updated
+            """,
+            (payload,),
+        )
+        return int(row["updated_count"] if row else 0)
 
 
 class FieldRepository:
@@ -145,16 +320,27 @@ class FieldRepository:
             field_ids: list[int],
             year: int,
     ) -> dict[int, Any]:
-        """Возвращает геометрии полей в одном repository scope."""
-        result = {}
-        for field_id in field_ids:
-            row = self.gateway.row(
-                "SELECT * FROM gpgeo.__geo_get_field_shape(%s, %s)",
-                (field_id, year),
+        """Возвращает геометрии полей одним запросом к PostGIS."""
+        if not field_ids:
+            return {}
+        rows = self.gateway.rows(
+            """
+            SELECT requested.fieldid, shape.*
+            FROM unnest(%s::bigint[]) AS requested(fieldid)
+            CROSS JOIN LATERAL gpgeo.__geo_get_field_shape(
+                requested.fieldid,
+                %s
+            ) AS shape
+            """,
+            (field_ids, year),
+        )
+        result = {row[0]: row[1] for row in rows}
+        missing = set(field_ids).difference(result)
+        if missing:
+            raise LookupError(
+                "Не найдены геометрии полей: "
+                + ", ".join(str(field_id) for field_id in sorted(missing))
             )
-            if row is None:
-                raise LookupError(f"Не найдена геометрия поля {field_id}")
-            result[field_id] = row[0]
         return result
 
 

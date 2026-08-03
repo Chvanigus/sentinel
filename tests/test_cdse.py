@@ -223,6 +223,31 @@ def test_archive_index_ignores_corrupt_zip(tmp_path):
     assert build_archive_index(tmp_path) == {"valid.zip"}
 
 
+def test_archive_index_scans_only_requested_dates_and_tiles(tmp_path):
+    """Ночной индекс не проверяет весь многолетний архив."""
+    selected_dir = tmp_path / "2026" / "38ULA"
+    selected_dir.mkdir(parents=True)
+    selected = selected_dir / "S2A_MSIL2A_20260731T081611_T38ULA_x.zip"
+    with zipfile.ZipFile(selected, "w") as archive:
+        archive.writestr("manifest.safe", b"ok")
+    old = selected_dir / "S2A_MSIL2A_20250101T081611_T38ULA_x.zip"
+    old.write_bytes(b"broken but outside period")
+    another_tile = tmp_path / "2026" / "38ULB"
+    another_tile.mkdir(parents=True)
+    with zipfile.ZipFile(
+            another_tile / "S2A_MSIL2A_20260731T081611_T38ULB_x.zip",
+            "w",
+    ) as archive:
+        archive.writestr("manifest.safe", b"ok")
+
+    assert build_archive_index(
+        tmp_path,
+        start_date=date(2026, 7, 29),
+        end_date=date(2026, 7, 31),
+        tiles=("38ULA",),
+    ) == {selected.name}
+
+
 def test_client_closes_unauthorized_response_before_retry():
     """Ответ 401 освобождает соединение пула до повторного запроса."""
 

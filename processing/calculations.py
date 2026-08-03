@@ -21,47 +21,36 @@ def normalized_difference(
             f"{primary_array.shape} != {secondary_array.shape}"
         )
 
-    source_valid = (
+    valid = (
         np.isfinite(primary_array)
         & np.isfinite(secondary_array)
         & (primary_array != source_nodata)
         & (secondary_array != source_nodata)
     )
-    primary_reflectance = primary_array + primary_offset
-    secondary_reflectance = secondary_array + secondary_offset
-    denominator = primary_reflectance + secondary_reflectance
-    result = np.full(primary_array.shape, nodata, dtype=np.float32)
+    # Два рабочих float32-массива вместо отдельных копий обеих отражательных
+    # способностей, знаменателя и результата существенно снижают нагрузку на
+    # память при обработке больших окон Sentinel.
+    result = np.subtract(primary_array, secondary_array, dtype=np.float32)
+    offset_difference = primary_offset - secondary_offset
+    if offset_difference:
+        result += offset_difference
+    denominator = np.add(
+        primary_array,
+        secondary_array,
+        dtype=np.float32,
+    )
+    offset_sum = primary_offset + secondary_offset
+    if offset_sum:
+        denominator += offset_sum
+    valid &= denominator != 0
     with np.errstate(divide="ignore", invalid="ignore"):
         np.divide(
-            primary_reflectance - secondary_reflectance,
+            result,
             denominator,
             out=result,
-            where=source_valid & (denominator != 0),
+            where=valid,
         )
 
-    valid = np.isfinite(result) & (result != nodata)
     np.clip(result, -1.0, 1.0, out=result, where=valid)
-    result[~np.isfinite(result)] = nodata
-    return result
-
-
-def apply_scl_mask(
-        ndvi: np.ndarray,
-        scl: np.ndarray,
-        *,
-        valid_classes: tuple[int, ...] = (4, 5, 6, 7),
-        nodata: float = -9999.0,
-) -> np.ndarray:
-    """Оставляет NDVI только для допустимых классов поверхности SCL."""
-    ndvi_array = np.asarray(ndvi, dtype=np.float32)
-    scl_array = np.asarray(scl)
-    if ndvi_array.shape != scl_array.shape:
-        raise ValueError(
-            "NDVI и SCL должны иметь одинаковую форму: "
-            f"{ndvi_array.shape} != {scl_array.shape}"
-        )
-
-    valid = np.isin(scl_array, valid_classes) & np.isfinite(ndvi_array)
-    result = np.full(ndvi_array.shape, nodata, dtype=np.float32)
-    np.copyto(result, ndvi_array, where=valid)
+    result[~valid] = nodata
     return result

@@ -1,8 +1,9 @@
 """Сборка production-зависимостей processing application service."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psycopg2
 
@@ -14,10 +15,14 @@ from db.repositories import LayerRepository
 
 from .adapters import PostgisFieldDataProvider
 from .discovery import ArchivePairFinder
-from .pair_processor import SentinelPairProcessor
+from .layer_metadata import (
+    LayerMetadataRefreshService,
+    LayerMetadataRefreshSummary,
+)
 from .service import ProcessingService
-from .storage import FieldGeometryExporter, GeowareTileArchive
-from .workspace import ProcessingOptions, WorkspacePaths
+
+if TYPE_CHECKING:
+    from .pair_processor import SentinelPairProcessor
 
 
 class PostgisProcessingStatusReader:
@@ -59,6 +64,10 @@ def build_pair_processor(
         recalculate_ndvi: bool = False,
 ) -> SentinelPairProcessor:
     """Собирает единый обработчик пары из конкретных GIS-зависимостей."""
+    from .pair_processor import SentinelPairProcessor
+    from .storage import FieldGeometryExporter, GeowareTileArchive
+    from .workspace import ProcessingOptions, WorkspacePaths
+
     workspace = WorkspacePaths(
         temporary=Path(settings.TEMP_PROCESSING_DIR),
         intermediate=Path(settings.INTERMEDIATE),
@@ -113,3 +122,21 @@ def build_processing_service(
         process_completed=recalculate_ndvi,
         clean_before_each=recalculate_ndvi,
     )
+
+
+def refresh_layer_metadata(
+        *,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+) -> LayerMetadataRefreshSummary:
+    """Обновляет метаданные слоёв в одном подключении без запуска GDAL."""
+    with psycopg2.connect(**get_database_config()) as connection:
+        service = LayerMetadataRefreshService(
+            archive_root=settings.ARCHIVE_ROOT,
+            pair_finder=ArchivePairFinder(),
+            writer=LayerRepository(SqlGateway(connection)),
+        )
+        return service.run(
+            start_date=start_date,
+            end_date=end_date,
+        )

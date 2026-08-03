@@ -1,6 +1,7 @@
 """Автономная проверка ключевой GDAL-цепочки на синтетических растрах."""
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,12 +12,10 @@ from osgeo import gdal, osr
 
 from processing.domain import ProductLevel, SceneContext
 from processing.indexes import SpectralIndexProcessor
-from processing.processors.cloudmask import (
-    FilterNDVIProcessor,
-    RescaleSCLProcessor,
-)
+from processing.processors.cloudmask import RescaleSCLProcessor
 from processing.processors.combine import MosaicProcessor
 from processing.processors.sentinel import AgroCropProcessor
+from processing.raster import FieldRasterReader
 
 gdal.UseExceptions()
 
@@ -73,7 +72,6 @@ class SmokeCloudMaskPaths:
         self._ndvi = root / "ndvi.tif"
         self._scl_20m = root / "scl_20m.tif"
         self._scl_10m = root / "scl_10m.tif"
-        self._filtered = root / "ndvi_filtered.tif"
 
     def ndvi(self, _agroid: int) -> str:
         """Возвращает исходный NDVI."""
@@ -86,11 +84,6 @@ class SmokeCloudMaskPaths:
     def scl_10m(self, _agroid: int) -> str:
         """Возвращает SCL-маску на сетке NDVI."""
         return str(self._scl_10m)
-
-    def filtered_ndvi(self, _agroid: int) -> str:
-        """Возвращает результат фильтрации NDVI."""
-        return str(self._filtered)
-
 
 class SmokeCropPaths:
     """Пути одного синтетического растра и результатов crop."""
@@ -161,7 +154,7 @@ def make_scene(
 
 
 def run_cloud_mask_smoke(root: Path) -> None:
-    """Проверяет ресемплинг SCL и фильтрацию NDVI реальным GDAL."""
+    """Проверяет ресемплинг SCL к сетке NDVI реальным GDAL."""
     root.mkdir()
     paths = SmokeCloudMaskPaths(root)
     ndvi = np.array(
@@ -195,27 +188,15 @@ def run_cloud_mask_smoke(root: Path) -> None:
 
     scene = make_scene()
     RescaleSCLProcessor(scene, paths).run()
-    FilterNDVIProcessor(
-        scene,
-        paths,
-        SimpleNamespace(nodata=-9999.0),
-    ).run()
 
     rescaled_scl = read_raster(Path(paths.scl_10m(1)))
-    filtered_ndvi = read_raster(Path(paths.filtered_ndvi(1)))
     if rescaled_scl.shape != ndvi.shape:
         raise AssertionError(
             f"Сетка SCL не совпала с NDVI: "
             f"{rescaled_scl.shape} != {ndvi.shape}"
         )
-    if not np.all(filtered_ndvi[:2, 2:] == -9999.0):
-        raise AssertionError(
-            "Пиксели класса SCL=3 не были замаскированы"
-        )
-    if not np.allclose(filtered_ndvi[2:, :], ndvi[2:, :]):
-        raise AssertionError(
-            "Допустимые классы SCL изменили значения NDVI"
-        )
+    if set(np.unique(rescaled_scl)) != set(np.unique(scl)):
+        raise AssertionError("NearestNeighbour изменил классы SCL")
 
 
 def run_spectral_index_smoke(root: Path) -> None:
@@ -314,6 +295,63 @@ def run_crop_smoke(root: Path) -> None:
         )
 
 
+def run_field_reader_smoke(root: Path) -> None:
+    """Проверяет совместную in-memory вырезку NDVI и SCL одного поля."""
+    root.mkdir()
+    ndvi_path = root / "ndvi.tif"
+    scl_path = root / "scl.tif"
+    mask_path = root / "field.geojson"
+    ndvi = np.arange(16, dtype=np.float32).reshape(4, 4) / 16
+    scl = np.full((4, 4), 4, dtype=np.uint8)
+    write_raster(
+        ndvi_path,
+        ndvi,
+        pixel_size=10,
+        data_type=gdal.GDT_Float32,
+    )
+    write_raster(
+        scl_path,
+        scl,
+        pixel_size=10,
+        data_type=gdal.GDT_Byte,
+    )
+    mask_path.write_text(
+        json.dumps({
+            "type": "FeatureCollection",
+            "crs": {
+                "type": "name",
+                "properties": {"name": "EPSG:3857"},
+            },
+            "features": [{
+                "type": "Feature",
+                "properties": {},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [0, 20],
+                        [20, 20],
+                        [20, 40],
+                        [0, 40],
+                        [0, 20],
+                    ]],
+                },
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    with FieldRasterReader(
+            ndvi_path,
+            scl_path=scl_path,
+            nodata=-9999.0,
+    ) as reader:
+        clip = reader.clip(mask_path)
+    if clip.values.shape != (2, 2) or clip.scl is None:
+        raise AssertionError("Совместный NDVI/SCL clip имеет неверную форму")
+    if not np.all(clip.coverage) or not np.all(clip.scl == 4):
+        raise AssertionError("Совместный NDVI/SCL clip потерял маску качества")
+
+
 def run_mosaic_smoke(root: Path) -> None:
     """Проверяет объединение соседних тайлов и освобождение VRT."""
     root.mkdir()
@@ -355,6 +393,7 @@ def run_smoke_test() -> None:
         run_cloud_mask_smoke(root / "cloud-mask")
         run_spectral_index_smoke(root / "spectral-index")
         run_crop_smoke(root / "crop")
+        run_field_reader_smoke(root / "field-reader")
         run_mosaic_smoke(root / "mosaic")
 
         print("GDAL smoke-test успешно завершён")

@@ -22,8 +22,8 @@ from .optimizer import optimize_geotiff
 class PublicationRepository(Protocol):
     """Порт persistence для публикации."""
 
-    def add_layer(self, layer: PublishedLayer) -> None:
-        """Регистрирует опубликованный слой."""
+    def add_layers(self, layers: list[PublishedLayer]) -> None:
+        """Регистрирует опубликованные слои одним пакетом."""
         ...
 
     def bounds(
@@ -35,13 +35,13 @@ class PublicationRepository(Protocol):
         """Возвращает границы хозяйства для прогрева кэша."""
         ...
 
-    def quality(
+    def quality_many(
             self,
             year: int,
-            agroid: int,
+            agroids: tuple[int, ...],
             acquired_on: date,
-    ) -> tuple[float | None, float | None]:
-        """Возвращает проценты облачного и валидного покрытия хозяйства."""
+    ) -> dict[int, tuple[float | None, float | None]]:
+        """Возвращает качество выбранных хозяйств одним запросом."""
         ...
 
 
@@ -139,10 +139,12 @@ class PostgisPublicationRepository:
             tuple[float | None, float | None],
         ] = {}
 
-    def add_layer(self, layer: PublishedLayer) -> None:
-        """Сохраняет сведения об опубликованном слое в PostGIS."""
+    def add_layers(self, layers: list[PublishedLayer]) -> None:
+        """Сохраняет все слои даты одним подключением к PostGIS."""
+        if not layers:
+            return
         with psycopg2.connect(**get_database_config()) as connection:
-            LayerRepository(SqlGateway(connection)).add(layer)
+            LayerRepository(SqlGateway(connection)).add_many(layers)
 
     def bounds(
             self,
@@ -163,47 +165,68 @@ class PostgisPublicationRepository:
         self._bounds[key] = bounds
         return bounds
 
-    def quality(
+    def quality_many(
             self,
             year: int,
-            agroid: int,
+            agroids: tuple[int, ...],
             acquired_on: date,
-    ) -> tuple[float | None, float | None]:
-        """Агрегирует пиксельные показатели всех полей хозяйства один раз."""
-        key = (year, agroid, acquired_on)
-        if key in self._quality:
-            return self._quality[key]
+    ) -> dict[int, tuple[float | None, float | None]]:
+        """Агрегирует пиксельные показатели всех хозяйств одним SQL."""
+        selected = tuple(dict.fromkeys(agroids))
+        missing = [
+            agroid
+            for agroid in selected
+            if (year, agroid, acquired_on) not in self._quality
+        ]
+        if not missing:
+            return {
+                agroid: self._quality[(year, agroid, acquired_on)]
+                for agroid in selected
+            }
         with psycopg2.connect(**get_database_config()) as connection:
             gateway = SqlGateway(connection)
-            fields = FieldRepository(gateway).list_for_agro(agroid, year)
-            field_ids = [field.id for field in fields if field.id is not None]
-            if not field_ids:
-                result = (None, None)
-            else:
-                row = gateway.row(
-                    """
-                    SELECT
-                        SUM(cloud_pixel_count) AS cloud_pixels,
-                        SUM(valid_pixel_count) AS valid_pixels,
-                        SUM(total_pixel_count) AS total_pixels
-                    FROM gpgeo.maps_ndvi_values
-                    WHERE date = %s AND fieldid = ANY (%s)
-                    """,
-                    (acquired_on, field_ids),
+            rows = gateway.rows(
+                """
+                WITH requested AS (
+                    SELECT unnest(%s::integer[]) AS agroid
                 )
-                total = int(row["total_pixels"] or 0) if row else 0
-                cloud = row["cloud_pixels"] if row else None
-                valid = row["valid_pixels"] if row else None
-                result = (
-                    float(cloud) / total * 100
-                    if cloud is not None and total
-                    else None,
-                    float(valid) / total * 100
-                    if valid is not None and total
-                    else None,
-                )
-        self._quality[key] = result
-        return result
+                SELECT
+                    requested.agroid,
+                    SUM(ndvi.cloud_pixel_count) AS cloud_pixels,
+                    SUM(ndvi.valid_pixel_count) AS valid_pixels,
+                    SUM(ndvi.total_pixel_count) AS total_pixels
+                FROM requested
+                LEFT JOIN LATERAL
+                    gpgeo.__geo_get_fieldnames_for_agro_year(
+                        requested.agroid,
+                        %s
+                    ) AS field
+                    ON true
+                LEFT JOIN gpgeo.maps_ndvi_values AS ndvi
+                    ON ndvi.fieldid = field.id
+                    AND ndvi.date = %s
+                GROUP BY requested.agroid
+                """,
+                (missing, year, acquired_on),
+            )
+        by_agroid = {row["agroid"]: row for row in rows}
+        for agroid in missing:
+            row = by_agroid.get(agroid)
+            total = int(row["total_pixels"] or 0) if row else 0
+            cloud = row["cloud_pixels"] if row else None
+            valid = row["valid_pixels"] if row else None
+            self._quality[(year, agroid, acquired_on)] = (
+                float(cloud) / total * 100
+                if cloud is not None and total
+                else None,
+                float(valid) / total * 100
+                if valid is not None and total
+                else None,
+            )
+        return {
+            agroid: self._quality[(year, agroid, acquired_on)]
+            for agroid in selected
+        }
 
 
 class RasterPublisher:
@@ -236,8 +259,9 @@ class RasterPublisher:
             self,
             file_path: Path,
             source: LayerSourceMetadata | None = None,
-    ) -> tuple[bool, str]:
-        """Оптимизирует, публикует и регистрирует один растровый файл."""
+            quality: tuple[float | None, float | None] = (None, None),
+    ) -> tuple[bool, str, PublishedLayer | None]:
+        """Оптимизирует и публикует файл, возвращая запись для БД."""
         plan = self.planner.build(file_path)
         refresh = plan.info.img_type in self.refresh_products
         try:
@@ -250,7 +274,7 @@ class RasterPublisher:
                 exc,
                 exc_info=True,
             )
-            return False, f"optimize_failed: {file_path.name}"
+            return False, f"optimize_failed: {file_path.name}", None
 
         created = self.client.create_coveragestore(
             store_name=plan.store_name,
@@ -264,43 +288,38 @@ class RasterPublisher:
                 plan.style_name,
             )
 
-        cloud_percent = None
-        valid_percent = None
-        if source is not None:
-            cloud_percent, valid_percent = self.repository.quality(
-                year=plan.info.date().year,
-                agroid=plan.info.agroid_number,
-                acquired_on=plan.info.date(),
-            )
-        self.repository.add_layer(
-            PublishedLayer(
-                name=f"{self.workspace}:{plan.layer_name}",
-                acquired_on=plan.info.date(),
-                product=plan.info.img_type,
-                agroid=plan.info.agroid_number,
-                acquired_at=source.acquired_at if source else None,
-                satellite=source.satellite if source else plan.info.satellite.upper(),
-                source_level=source.source_level if source else None,
-                processing_baseline=(
-                    source.processing_baseline if source else None
-                ),
-                source_tiles=(
-                    source.source_tiles_by_agroid.get(
-                        plan.info.agroid_number,
-                        (),
-                    )
-                    if source
-                    else ()
-                ),
-                cloud_coverage_percent=cloud_percent,
-                valid_coverage_percent=valid_percent,
-                resolution_m=plan.info.resolution,
-                is_cloud_masked=False,
-                algorithm_version=(
-                    source.algorithm_version if source else None
-                ),
-                generated_at=datetime.now(UTC),
-            )
+        cloud_percent, valid_percent = quality
+        layer = PublishedLayer(
+            name=f"{self.workspace}:{plan.layer_name}",
+            acquired_on=plan.info.date(),
+            product=plan.info.img_type,
+            agroid=plan.info.agroid_number,
+            acquired_at=source.acquired_at if source else None,
+            satellite=(
+                source.satellite
+                if source
+                else plan.info.satellite.upper()
+            ),
+            source_level=source.source_level if source else None,
+            processing_baseline=(
+                source.processing_baseline if source else None
+            ),
+            source_tiles=(
+                source.source_tiles_by_agroid.get(
+                    plan.info.agroid_number,
+                    (),
+                )
+                if source
+                else ()
+            ),
+            cloud_coverage_percent=cloud_percent,
+            valid_coverage_percent=valid_percent,
+            resolution_m=plan.info.resolution,
+            is_cloud_masked=False,
+            algorithm_version=(
+                source.algorithm_version if source else None
+            ),
+            generated_at=datetime.now(UTC),
         )
         if created:
             self.client.enable_gwc_gridset_3857(plan.layer_name)
@@ -323,7 +342,7 @@ class RasterPublisher:
                 bbox=bbox,
                 reseed=refresh,
             )
-        return True, plan.layer_name
+        return True, plan.layer_name, layer
 
     def publish_date(
             self,
@@ -332,7 +351,7 @@ class RasterPublisher:
     ) -> None:
         """Публикует TIFF указанной даты и агрегирует ошибки."""
         failures = []
-        matched = 0
+        matched_files = []
         for root, _, files in os.walk(self.source_root):
             for filename in files:
                 if not filename.lower().endswith(".tif"):
@@ -341,8 +360,7 @@ class RasterPublisher:
                 try:
                     if split_file_name(filename).date() != acquired_on:
                         continue
-                    matched += 1
-                    success, reason = self._publish_file(file_path, source)
+                    matched_files.append(file_path)
                 except Exception as exc:
                     self.logger.exception(
                         "Ошибка публикации %s: %s",
@@ -350,20 +368,55 @@ class RasterPublisher:
                         exc,
                     )
                     failures.append(filename)
-                    continue
-                if not success:
-                    self.logger.warning(
-                        "Файл не опубликован: %s (%s)",
-                        filename,
-                        reason,
-                    )
-                    failures.append(filename)
 
-        if matched == 0:
+        if not matched_files:
             raise RuntimeError(
                 "Не найдены готовые TIFF за дату "
                 f"{acquired_on.isoformat()}"
             )
+
+        quality_by_agroid = {}
+        if source is not None:
+            agroids = tuple(dict.fromkeys(
+                split_file_name(path.name).agroid_number
+                for path in matched_files
+            ))
+            quality_by_agroid = self.repository.quality_many(
+                year=acquired_on.year,
+                agroids=agroids,
+                acquired_on=acquired_on,
+            )
+
+        published_layers = []
+        for file_path in matched_files:
+            filename = file_path.name
+            agroid = split_file_name(filename).agroid_number
+            try:
+                success, reason, layer = self._publish_file(
+                    file_path,
+                    source,
+                    quality_by_agroid.get(agroid, (None, None)),
+                )
+            except Exception as exc:
+                self.logger.exception(
+                    "Ошибка публикации %s: %s",
+                    filename,
+                    exc,
+                )
+                failures.append(filename)
+                continue
+            if not success:
+                self.logger.warning(
+                    "Файл не опубликован: %s (%s)",
+                    filename,
+                    reason,
+                )
+                failures.append(filename)
+            elif layer is not None:
+                published_layers.append(layer)
+
+        if published_layers:
+            self.repository.add_layers(published_layers)
         if failures:
             raise RuntimeError(
                 "Не удалось опубликовать файлы: " + ", ".join(failures)

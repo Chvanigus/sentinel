@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .domain import ArchivePair, ProductLevel
 
-ZipIterator = Callable[[str], Iterable[str]]
+ZipIterator = Callable[..., Iterable[str]]
 
 _ARCHIVE_NAME = re.compile(
     r"^(?P<satellite>S[1-9][A-Z])_"
@@ -65,12 +65,25 @@ def parse_archive_name(path: str) -> ArchiveName | None:
     )
 
 
-def iter_archive_files(root: str) -> Iterable[str]:
-    """Рекурсивно перечисляет ZIP-файлы архива снимков."""
-    for current_root, _, files in os.walk(root):
-        for filename in files:
-            if filename.lower().endswith(".zip"):
-                yield str(Path(current_root) / filename)
+def iter_archive_files(
+        root: str,
+        *,
+        years: tuple[int, ...] = (),
+) -> Iterable[str]:
+    """Перечисляет ZIP-файлы архива, ограничиваясь нужными годами."""
+    archive_root = Path(root)
+    scan_roots = (
+        [archive_root / str(year) for year in years]
+        if years
+        else [archive_root]
+    )
+    for scan_root in scan_roots:
+        if not scan_root.exists():
+            continue
+        for current_root, _, files in os.walk(scan_root):
+            for filename in files:
+                if filename.lower().endswith(".zip"):
+                    yield str(Path(current_root) / filename)
 
 
 class ArchivePairFinder:
@@ -84,16 +97,37 @@ class ArchivePairFinder:
         self._zip_iterator = zip_iterator
         self._name_parser = name_parser
 
-    def find(self, archive_root: str | Path) -> list[ArchivePair]:
-        """Возвращает крупнейшие полные пары, не смешивая пролёты и уровни."""
+    def find(
+            self,
+            archive_root: str | Path,
+            *,
+            start_date: datetime | None = None,
+            end_date: datetime | None = None,
+    ) -> list[ArchivePair]:
+        """Возвращает крупнейшие полные пары выбранного периода."""
         grouped: dict[
             tuple[str, datetime, str, ProductLevel, int | None],
             dict[str, list[Path]],
         ] = defaultdict(lambda: defaultdict(list))
 
-        for zip_path in self._zip_iterator(str(archive_root)):
+        years = self._period_years(start_date, end_date)
+        for zip_path in self._zip_iterator(
+                str(archive_root),
+                years=years,
+        ):
             parsed = self._name_parser(zip_path)
             if parsed is None:
+                continue
+            acquired_on = parsed.acquired_at.replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+                tzinfo=None,
+            )
+            if start_date is not None and acquired_on < start_date:
+                continue
+            if end_date is not None and acquired_on >= end_date:
                 continue
 
             tile = parsed.tile
@@ -142,6 +176,16 @@ class ArchivePairFinder:
             if current is None or self._pair_rank(pair) > self._pair_rank(current):
                 best[key] = pair
         return sorted(best.values(), key=lambda pair: pair.acquired_at)
+
+    @staticmethod
+    def _period_years(
+            start_date: datetime | None,
+            end_date: datetime | None,
+    ) -> tuple[int, ...]:
+        """Возвращает каталоги лет, которые могут пересекать период."""
+        if start_date is None or end_date is None:
+            return ()
+        return tuple(range(start_date.year, end_date.year + 1))
 
     @staticmethod
     def _archive_rank(path: Path) -> tuple[int, str]:

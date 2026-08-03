@@ -9,7 +9,7 @@ from time import perf_counter
 from core.logging import get_logger
 
 from .archive import SentinelArchive
-from .domain import ArchivePair, ProductLevel, SceneContext
+from .domain import AGROIDS_BY_TILE, ArchivePair, ProductLevel, SceneContext
 from .exceptions import ProcessingStepError
 from .paths import (
     CloudMaskPaths,
@@ -19,7 +19,7 @@ from .paths import (
     NdviStatisticsPaths,
     SentinelCropPaths,
 )
-from .processors.cloudmask import FilterNDVIProcessor, RescaleSCLProcessor
+from .processors.cloudmask import RescaleSCLProcessor
 from .processors.combine import MosaicProcessor
 from .processors.ndvistat import NdviStatisticsProcessor
 from .processors.sentinel import AgroCropProcessor
@@ -53,21 +53,65 @@ class SentinelPairProcessor:
         self.overwrite_statistics = overwrite_statistics
         self.logger = get_logger(self.__class__.__name__)
 
-    def process(self, pair: ArchivePair) -> None:
-        """Обрабатывает два тайла пары и выполняет общие этапы ровно один раз."""
+    def process(
+            self,
+            pair: ArchivePair,
+            target_agroids: tuple[int, ...] | None = None,
+    ) -> None:
+        """Обрабатывает только хозяйства, отсутствующие у выбранной даты."""
         pair_started = perf_counter()
         scenes = []
-        for archive_path in pair.archives:
-            scene = self._run_step(
-                "extract",
+        targets = set(target_agroids) if target_agroids is not None else None
+        for side, archive_path in zip(
+                ("ula", "ulb"),
+                pair.archives,
+                strict=True,
+        ):
+            expected_tile = f"{pair.prefix}{side}".lower()
+            if targets is not None and targets.isdisjoint(
+                    AGROIDS_BY_TILE.get(expected_tile, ())
+            ):
+                self.logger.info(
+                    "TILE SKIP: %s → целевые хозяйства отсутствуют",
+                    expected_tile,
+                )
+                continue
+            archive, scene = self._run_step(
+                "inspect",
                 archive_path.name,
-                lambda path=archive_path: self._extract_scene(path),
+                lambda path=archive_path: self._inspect_scene(path),
             )
-            self._run_step(
-                "tile",
-                self._scene_label(scene),
-                lambda current=scene: self._process_tile(current),
+            if targets is not None:
+                scene = replace(
+                    scene,
+                    agroids=tuple(
+                        agroid
+                        for agroid in scene.agroids
+                        if agroid in targets
+                    ),
+                )
+            restored = (
+                not self.ndvi_only
+                and self._restore_tile_products(scene)
             )
+            if restored:
+                self.logger.info(
+                    "TILE CACHE HIT: %s",
+                    self._scene_label(scene),
+                )
+            else:
+                self._run_step(
+                    "extract",
+                    archive_path.name,
+                    lambda current_archive=archive, current=scene: (
+                        self._extract_bands(current_archive, current)
+                    ),
+                )
+                self._run_step(
+                    "tile",
+                    self._scene_label(scene),
+                    lambda current=scene: self._process_tile(current),
+                )
             self._run_step(
                 "crop",
                 self._scene_label(scene),
@@ -82,9 +126,9 @@ class SentinelPairProcessor:
             lambda: self._combine(final_scene),
         )
         self._run_step(
-            "cloud-mask",
+            "scl-rescale",
             self._scene_label(final_scene),
-            lambda: self._apply_cloud_mask(final_scene),
+            lambda: self._prepare_scl(final_scene),
         )
         self._run_step(
             "ndvi-statistics",
@@ -97,14 +141,25 @@ class SentinelPairProcessor:
             perf_counter() - pair_started,
         )
 
-    def _extract_scene(self, archive_path: Path) -> SceneContext:
-        """Читает метаданные и извлекает только требуемые каналы архива."""
+    def _inspect_scene(
+            self,
+            archive_path: Path,
+    ) -> tuple[SentinelArchive, SceneContext]:
+        """Читает метаданные архива без извлечения тяжёлых каналов."""
         archive = SentinelArchive(archive_path)
         scene = SceneContext.from_zip_info(
             archive_path,
             archive.metadata,
             band_offsets=archive.read_band_offsets(),
         )
+        return archive, scene
+
+    def _extract_bands(
+            self,
+            archive: SentinelArchive,
+            scene: SceneContext,
+    ) -> None:
+        """Извлекает минимальный набор каналов ещё не кешированной сцены."""
         required_bands = scene.level.required_bands
         if self.ndvi_only:
             required_bands = ("B04", "B08")
@@ -116,10 +171,35 @@ class SentinelPairProcessor:
         )
         self.logger.info(
             "EXTRACT OK: %s → %s",
-            archive_path.name,
+            scene.archive_path.name,
             extracted_path,
         )
-        return scene
+
+    def _restore_tile_products(self, scene: SceneContext) -> bool:
+        """Восстанавливает все tile-level продукты сцены из geoware-кэша."""
+        path_type = (
+            L1CProductPaths
+            if scene.level is ProductLevel.L1C
+            else L2AProductPaths
+        )
+        paths = path_type(scene, self.workspace)
+        products = self.products or frozenset({"tci", "ndvi", "ndwi", "scl"})
+        selected = [
+            product
+            for product in ("tci", "ndvi", "ndwi", "scl")
+            if product in products and not (
+                product == "scl" and scene.level is ProductLevel.L1C
+            )
+        ]
+        restored = [
+            self.output_archive.restore(
+                scene,
+                paths.destination(product),
+                product,
+            )
+            for product in selected
+        ]
+        return bool(restored) and all(restored)
 
     def _process_tile(self, scene: SceneContext) -> None:
         """Создаёт tile-level продукты одной сцены."""
@@ -148,19 +228,20 @@ class SentinelPairProcessor:
 
     def _combine(self, scene: SceneContext) -> None:
         """Один раз объединяет фрагменты хозяйства на границе тайлов."""
+        if 1 not in scene.agroids:
+            return
         MosaicProcessor(
             scene,
             MosaicPaths(scene, self.workspace),
             products=self.products,
         ).run()
 
-    def _apply_cloud_mask(self, scene: SceneContext) -> None:
-        """Готовит облачную маску для статистики, не меняя визуальный NDVI."""
+    def _prepare_scl(self, scene: SceneContext) -> None:
+        """Приводит SCL к сетке NDVI без создания фильтрованной копии."""
         if scene.level is ProductLevel.L1C:
             return
         paths = CloudMaskPaths(scene, self.workspace)
         RescaleSCLProcessor(scene, paths).run()
-        FilterNDVIProcessor(scene, paths, self.options).run()
 
     def _collect_statistics(self, scene: SceneContext) -> None:
         """Рассчитывает статистику всех хозяйств согласованной пары."""
@@ -179,18 +260,30 @@ class SentinelPairProcessor:
             scenes: list[SceneContext],
     ) -> SceneContext:
         """Проверяет пару и создаёт контекст всех её хозяйств."""
-        if len(scenes) != 2:
-            raise ValueError("Для обработки требуется ровно два тайла")
-        first, second = scenes
-        if (
-                first.acquired_on != second.acquired_on
-                or first.satellite != second.satellite
-                or first.level is not second.level
-        ):
-            raise ValueError("Архивы пары относятся к разным съёмкам или уровням")
-        if first.acquired_on != pair.acquired_on or first.level is not pair.level:
-            raise ValueError("Метаданные архивов не соответствуют найденной паре")
-        agroids = tuple(dict.fromkeys((*first.agroids, *second.agroids)))
+        if not scenes:
+            raise ValueError("Для обработки не выбрано ни одного хозяйства")
+        first = scenes[0]
+        for scene in scenes:
+            if (
+                    scene.acquired_on != first.acquired_on
+                    or scene.satellite != first.satellite
+                    or scene.level is not first.level
+            ):
+                raise ValueError(
+                    "Архивы пары относятся к разным съёмкам или уровням"
+                )
+            if (
+                    scene.acquired_on != pair.acquired_on
+                    or scene.level is not pair.level
+            ):
+                raise ValueError(
+                    "Метаданные архивов не соответствуют найденной паре"
+                )
+        agroids = tuple(dict.fromkeys(
+            agroid
+            for scene in scenes
+            for agroid in scene.agroids
+        ))
         return replace(first, agroids=agroids)
 
     def _run_step(

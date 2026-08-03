@@ -80,23 +80,35 @@ class WritingGeometryExporter:
         return path
 
 
-RASTER_CLIPS = []
+RASTER_READERS = []
 
 
-def recording_clip(source, mask, **options):
-    """Фиксирует in-memory вырезку и возвращает тестовый NDVI."""
-    RASTER_CLIPS.append((source, mask, options))
-    value = 4.0 if "scl" in str(source) else 0.5
-    return RasterClip(
-        values=np.array([[value]], dtype=np.float32),
-        coverage=np.array([[True]], dtype=bool),
-    )
+class RecordingRasterReader:
+    """Имитирует открытый один раз источник NDVI/SCL хозяйства."""
 
+    def __init__(self, source, **options):
+        """Фиксирует исходники и создаёт журнал вырезок."""
+        self.source = source
+        self.options = options
+        self.masks = []
+        RASTER_READERS.append(self)
 
-def recording_array_clip(source, mask, **options):
-    """Фиксирует обычную вырезку SCL без повторной растеризации маски."""
-    RASTER_CLIPS.append((source, mask, options))
-    return np.array([[4.0]], dtype=np.float32)
+    def __enter__(self):
+        """Возвращает тестовый reader."""
+        return self
+
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
+        """Завершает тестовый контекст без подавления ошибок."""
+        return None
+
+    def clip(self, mask):
+        """Фиксирует маску и возвращает NDVI вместе с SCL."""
+        self.masks.append(mask)
+        return RasterClip(
+            values=np.array([[0.5]], dtype=np.float32),
+            coverage=np.array([[True]], dtype=bool),
+            scl=np.array([[4.0]], dtype=np.float32),
+        )
 
 
 class RecordingAnalyzer:
@@ -150,14 +162,10 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     )
     exporter = WritingGeometryExporter()
     analyzer = RecordingAnalyzer()
-    RASTER_CLIPS.clear()
+    RASTER_READERS.clear()
     monkeypatch.setattr(
-        "processing.processors.ndvistat.clip_by_mask_with_coverage",
-        recording_clip,
-    )
-    monkeypatch.setattr(
-        "processing.processors.ndvistat.clip_by_mask_array",
-        recording_array_clip,
+        "processing.processors.ndvistat.FieldRasterReader",
+        RecordingRasterReader,
     )
     processor = NdviStatisticsProcessor(
         make_scene(),
@@ -184,43 +192,15 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     assert exporter.exports == [
         ("geometry-11", Path(paths.field_geojson(3, "11")))
     ]
-    assert RASTER_CLIPS == [
-        (
-            paths.ndvi_source(3),
-            paths.field_geojson(3, "10"),
-            {
-                "x_resolution": 10,
-                "y_resolution": 10,
-                "nodata": -9999.0,
-            },
-        ),
-        (
-            paths.scl_source(3),
-            paths.field_geojson(3, "10"),
-            {
-                "x_resolution": 10,
-                "y_resolution": 10,
-                "nodata": 0,
-            },
-        ),
-        (
-            paths.ndvi_source(3),
-            paths.field_geojson(3, "11"),
-            {
-                "x_resolution": 10,
-                "y_resolution": 10,
-                "nodata": -9999.0,
-            },
-        ),
-        (
-            paths.scl_source(3),
-            paths.field_geojson(3, "11"),
-            {
-                "x_resolution": 10,
-                "y_resolution": 10,
-                "nodata": 0,
-            },
-        ),
+    assert len(RASTER_READERS) == 1
+    assert RASTER_READERS[0].source == paths.ndvi_source(3)
+    assert RASTER_READERS[0].options == {
+        "scl_path": paths.scl_source(3),
+        "nodata": -9999.0,
+    }
+    assert RASTER_READERS[0].masks == [
+        paths.field_geojson(3, "10"),
+        paths.field_geojson(3, "11"),
     ]
     assert [call[2] for call in analyzer.calls] == [10, 11]
     assert len(field_data.saved_values) == 1
@@ -274,16 +254,21 @@ def test_run_overwrites_completed_statistics_with_quality_metadata(
         {},
         complete=True,
     )
+    class EmptyRasterReader(RecordingRasterReader):
+        """Возвращает поле без валидного NDVI."""
+
+        def clip(self, mask):
+            """Возвращает nodata NDVI и валидную SCL-маску."""
+            self.masks.append(mask)
+            return RasterClip(
+                values=np.array([[-9999.0]], dtype=np.float32),
+                coverage=np.array([[True]], dtype=bool),
+                scl=np.array([[4.0]], dtype=np.float32),
+            )
+
     monkeypatch.setattr(
-        "processing.processors.ndvistat.clip_by_mask_with_coverage",
-        lambda *_args, **_kwargs: RasterClip(
-            values=np.array([[-9999.0]], dtype=np.float32),
-            coverage=np.array([[True]], dtype=bool),
-        ),
-    )
-    monkeypatch.setattr(
-        "processing.processors.ndvistat.clip_by_mask_array",
-        lambda *_args, **_kwargs: np.array([[4.0]], dtype=np.float32),
+        "processing.processors.ndvistat.FieldRasterReader",
+        EmptyRasterReader,
     )
 
     NdviStatisticsProcessor(

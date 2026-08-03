@@ -9,7 +9,7 @@ from domain.models import Field
 from processing.domain import ProductLevel
 from processing.ndvi import NdviFieldAnalyzer
 from processing.ports import FieldDataProvider
-from processing.raster import clip_by_mask_array, clip_by_mask_with_coverage
+from processing.raster import FieldRasterReader
 from processing.storage import FieldGeometryExporter
 
 
@@ -104,48 +104,48 @@ class NdviStatisticsProcessor:
             )
             self._save_field_geojsons(fields, agroid)
             ndvi_values = []
-
-            for field in fields:
-                if field.id is None:
-                    raise ValueError(f"У поля {field.name} отсутствует id")
-                geojson = self.paths.field_geojson(agroid, field.name)
-                if not os.path.exists(geojson):
-                    self.logger.warning("GeoJSON не найден → %s", geojson)
-                    continue
-
-                ndvi_clip = clip_by_mask_with_coverage(
-                    src_ndvi,
-                    geojson,
-                    x_resolution=10,
-                    y_resolution=10,
-                    nodata=self.nodata,
-                )
-                scl = None
-                if self.scene.level is ProductLevel.L2A:
-                    scl_path = self.paths.scl_source(agroid)
-                    if not os.path.exists(scl_path):
-                        raise FileNotFoundError(
-                            f"SCL не найден для метаданных NDVI: {scl_path}"
-                        )
-                    scl = clip_by_mask_array(
-                        scl_path,
-                        geojson,
-                        x_resolution=10,
-                        y_resolution=10,
-                        # SCL имеет тип Byte, а класс 0 означает No Data.
-                        nodata=0,
+            scl_path = None
+            if self.scene.level is ProductLevel.L2A:
+                scl_path = self.paths.scl_source(agroid)
+                if not os.path.exists(scl_path):
+                    raise FileNotFoundError(
+                        f"SCL не найден для метаданных NDVI: {scl_path}"
                     )
 
-                val = self.analyzer.analyze(
-                    ndvi=ndvi_clip.values,
-                    acquired_on=self.scene.acquired_on,
-                    field_id=field.id,
-                    coverage_mask=ndvi_clip.coverage,
-                    scl=scl,
-                    source_level=self.scene.level.value.upper(),
-                )
-                if val is not None:
-                    ndvi_values.append(val)
+            # Исходные растры открываются один раз на хозяйство, а NDVI и SCL
+            # вырезаются одним Warp для каждого поля.
+            with FieldRasterReader(
+                    src_ndvi,
+                    scl_path=scl_path,
+                    nodata=self.nodata,
+            ) as raster_reader:
+                for field in fields:
+                    if field.id is None:
+                        raise ValueError(
+                            f"У поля {field.name} отсутствует id"
+                        )
+                    geojson = self.paths.field_geojson(
+                        agroid,
+                        field.name,
+                    )
+                    if not os.path.exists(geojson):
+                        self.logger.warning(
+                            "GeoJSON не найден → %s",
+                            geojson,
+                        )
+                        continue
+
+                    clip = raster_reader.clip(geojson)
+                    val = self.analyzer.analyze(
+                        ndvi=clip.values,
+                        acquired_on=self.scene.acquired_on,
+                        field_id=field.id,
+                        coverage_mask=clip.coverage,
+                        scl=clip.scl,
+                        source_level=self.scene.level.value.upper(),
+                    )
+                    if val is not None:
+                        ndvi_values.append(val)
 
             field_ids = [
                 field.id

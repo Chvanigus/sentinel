@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+from domain.models import LayerMetadataUpdate, LayerSourceMetadata
 
 
 class ProductLevel(StrEnum):
@@ -114,6 +116,54 @@ class ArchivePair:
     def archives(self) -> tuple[Path, Path]:
         """Возвращает архивы пары в стабильном порядке ULA, ULB."""
         return self.ula, self.ulb
+
+
+def build_layer_source_metadata(
+        pair: ArchivePair,
+        *,
+        algorithm_version: str = PROCESSING_ALGORITHM_VERSION,
+) -> LayerSourceMetadata:
+    """Строит общие метаданные публикации из согласованной пары архивов."""
+    by_agroid: dict[int, list[str]] = {}
+    for tile, agroids in AGROIDS_BY_TILE.items():
+        for agroid in agroids:
+            by_agroid.setdefault(agroid, []).append(tile.upper())
+    acquired_at = pair.acquired_at
+    if acquired_at.tzinfo is None:
+        acquired_at = acquired_at.replace(tzinfo=UTC)
+    else:
+        acquired_at = acquired_at.astimezone(UTC)
+    return LayerSourceMetadata(
+        acquired_at=acquired_at,
+        satellite=pair.satellite.upper(),
+        source_level=pair.level.name,
+        processing_baseline=pair.processing_baseline,
+        source_tiles_by_agroid={
+            agroid: tuple(tiles)
+            for agroid, tiles in by_agroid.items()
+        },
+        algorithm_version=algorithm_version,
+    )
+
+
+def build_layer_metadata_updates(
+        pair: ArchivePair,
+) -> tuple[LayerMetadataUpdate, ...]:
+    """Создаёт обновления всех хозяйств из метаданных локальной пары."""
+    source = build_layer_source_metadata(pair, algorithm_version="legacy")
+    return tuple(
+        LayerMetadataUpdate(
+            acquired_on=pair.acquired_on,
+            agroid=agroid,
+            acquired_at=source.acquired_at,
+            satellite=source.satellite,
+            source_level=source.source_level,
+            processing_baseline=source.processing_baseline,
+            source_tiles=source_tiles,
+            fallback_algorithm_version=source.algorithm_version,
+        )
+        for agroid, source_tiles in source.source_tiles_by_agroid.items()
+    )
 
 
 @dataclass(frozen=True)

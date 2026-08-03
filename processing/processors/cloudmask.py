@@ -4,12 +4,8 @@ import os
 from osgeo import gdal
 
 from core.logging import get_logger
-from processing.calculations import apply_scl_mask
 from processing.dataset import (
     atomic_raster_path,
-    create_raster_like,
-    ensure_same_grid,
-    iter_raster_windows,
     open_raster,
 )
 
@@ -87,71 +83,3 @@ class RescaleSCLProcessor:
             gt[0] + gt[1] * ds.RasterXSize,
             gt[3],
         )
-
-
-class FilterNDVIProcessor:
-    """Фильтрует NDVI с использованием SCL-маски (10м)."""
-    VALID_SCL_VALUES = (4, 5, 6, 7)
-
-    def __init__(self,
-                 scene,
-                 paths,
-                 options):
-        self.scene = scene
-        self.paths = paths
-        self.logger = get_logger(self.__class__.__name__)
-        self.options = options
-
-    def run(self) -> None:
-        """Заменяет невалидные по SCL пиксели NDVI значением nodata."""
-        for agroid in self.scene.agroids:
-            ndvi_path = self.paths.ndvi(agroid)
-            if not os.path.exists(ndvi_path):
-                self.logger.warning("NDVI не найден: %s", ndvi_path)
-                continue
-
-            scl_path = self.paths.scl_10m(agroid)
-            if not os.path.exists(scl_path):
-                self.logger.warning("SCL 10m не найден: %s", scl_path)
-                continue
-            dst_ndvi = self.paths.filtered_ndvi(agroid)
-
-            if os.path.exists(dst_ndvi):
-                self.logger.info(
-                    "Фильтрованный NDVI уже есть для агро %s → пропуск",
-                    agroid
-                )
-                continue
-
-            with open_raster(ndvi_path) as ndvi_ds, open_raster(
-                    scl_path
-            ) as scl_ds:
-                ensure_same_grid(ndvi_ds, scl_ds, "SCL")
-                with create_raster_like(
-                        ndvi_ds,
-                        dst_ndvi,
-                        nodata=self.options.nodata,
-                ) as output:
-                    output_band = output.GetRasterBand(1)
-                    ndvi_band = ndvi_ds.GetRasterBand(1)
-                    scl_band = scl_ds.GetRasterBand(1)
-                    for window in iter_raster_windows(ndvi_ds):
-                        ndvi_array = ndvi_band.ReadAsArray(*window)
-                        scl_array = scl_band.ReadAsArray(*window)
-                        if ndvi_array is None or scl_array is None:
-                            raise RuntimeError(
-                                f"Не удалось прочитать блок {window}"
-                            )
-                        filtered = apply_scl_mask(
-                            ndvi_array,
-                            scl_array,
-                            valid_classes=self.VALID_SCL_VALUES,
-                            nodata=self.options.nodata,
-                        )
-                        output_band.WriteArray(
-                            filtered,
-                            window[0],
-                            window[1],
-                        )
-
-            self.logger.info("NDVI отфильтрован для агро %s", agroid)

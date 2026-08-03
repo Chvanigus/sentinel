@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cli.commands.metadata import Command as MetadataCommand
 from cli.commands.processing import Command as ProcessingCommand
 from cli.commands.processing import resolve_date_range
 from core import settings
@@ -90,9 +91,37 @@ def test_ndvi_recalculation_requires_explicit_period(monkeypatch):
         )
 
 
+def test_metadata_command_passes_normalized_period(monkeypatch):
+    """Команда метаданных передаёт composition root полуоткрытый период."""
+    calls = []
+    monkeypatch.setattr(
+        "processing.composition.refresh_layer_metadata",
+        lambda **options: calls.append(options),
+    )
+
+    MetadataCommand().handle(
+        year=2026,
+        month=7,
+        start=None,
+        end=None,
+    )
+
+    assert calls == [
+        {
+            "start_date": datetime(2026, 7, 1),
+            "end_date": datetime(2026, 8, 1),
+        }
+    ]
+
+
 def test_management_help_discovers_commands():
     """Менеджер обнаруживает только поддерживаемые команды."""
-    assert get_command_names() == ["clearprocessing", "download", "processing"]
+    assert get_command_names() == [
+        "clearprocessing",
+        "download",
+        "metadata",
+        "processing",
+    ]
 
 
 def test_unknown_management_command_returns_nonzero():

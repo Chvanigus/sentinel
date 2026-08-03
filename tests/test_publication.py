@@ -24,9 +24,10 @@ def test_publish_date_raises_when_a_file_was_not_published(
     publisher = RasterPublisher.__new__(RasterPublisher)
     publisher.source_root = tmp_path
     publisher.logger = get_logger("test-publication")
-    publisher._publish_file = lambda _path, _source=None: (
+    publisher._publish_file = lambda _path, _source=None, _quality=None: (
         False,
         "optimize_failed",
+        None,
     )
 
     with pytest.raises(RuntimeError, match=raster.name):
@@ -57,9 +58,10 @@ def test_publish_date_does_not_repeat_previous_dates(tmp_path):
     publisher = RasterPublisher.__new__(RasterPublisher)
     publisher.source_root = tmp_path
     publisher.logger = get_logger("test-publication-date")
-    publisher._publish_file = lambda path, _source=None: (
+    publisher._publish_file = lambda path, _source=None, _quality=None: (
         published.append(path) is None,
         path.name,
+        None,
     )
 
     publisher.publish_date(date(2026, 7, 1))
@@ -122,13 +124,13 @@ def test_publication_persists_visual_metadata(tmp_path):
     class Repository:
         """Фиксирует сохраняемые метаданные слоя."""
 
-        def add_layer(self, layer):
-            """Запоминает опубликованный слой."""
-            layers.append(layer)
+        def add_layers(self, values):
+            """Запоминает пакет опубликованных слоёв."""
+            layers.extend(values)
 
-        def quality(self, **_options):
-            """Возвращает тестовые проценты покрытия."""
-            return 12.5, 81.25
+        def quality_many(self, *, agroids, **_options):
+            """Возвращает тестовые проценты покрытия хозяйств."""
+            return {agroid: (12.5, 81.25) for agroid in agroids}
 
         def bounds(self, **_options):
             """Возвращает тестовые границы хозяйства."""
@@ -220,6 +222,70 @@ def test_postgis_repository_caches_repeated_agro_bounds(monkeypatch):
     assert calls == [{"srid": 3857, "year": 2026, "agroid": 3}]
 
 
+def test_postgis_repository_reads_all_quality_in_one_query(monkeypatch):
+    """Качество нескольких хозяйств агрегируется одним подключением."""
+    connections = []
+
+    class Connection:
+        """Имитирует gateway и подключение к PostGIS."""
+
+        def __enter__(self):
+            connections.append(self)
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def rows(self, query, params):
+            """Возвращает агрегаты двух хозяйств."""
+            self.query = query
+            self.params = params
+            return [
+                {
+                    "agroid": 3,
+                    "cloud_pixels": 10,
+                    "valid_pixels": 80,
+                    "total_pixels": 100,
+                },
+                {
+                    "agroid": 4,
+                    "cloud_pixels": 5,
+                    "valid_pixels": 90,
+                    "total_pixels": 100,
+                },
+            ]
+
+    monkeypatch.setattr(
+        publisher_module.psycopg2,
+        "connect",
+        lambda **_options: Connection(),
+    )
+    monkeypatch.setattr(
+        publisher_module,
+        "get_database_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(publisher_module, "SqlGateway", lambda value: value)
+    repository = PostgisPublicationRepository()
+
+    first = repository.quality_many(
+        year=2026,
+        agroids=(3, 4),
+        acquired_on=date(2026, 7, 1),
+    )
+    second = repository.quality_many(
+        year=2026,
+        agroids=(4, 3),
+        acquired_on=date(2026, 7, 1),
+    )
+
+    assert first == {3: (10.0, 80.0), 4: (5.0, 90.0)}
+    assert second == {4: (5.0, 90.0), 3: (10.0, 80.0)}
+    assert len(connections) == 1
+    assert "WITH requested" in connections[0].query
+    assert connections[0].params == ([3, 4], 2026, date(2026, 7, 1))
+
+
 def test_refresh_product_overwrites_cog_and_reseeds_cache(tmp_path):
     """Перерасчёт NDVI заменяет опубликованный COG и обновляет GWC-кэш."""
     source = tmp_path / "s2a_01_07_2026_a3_ndvi_10m_3857.tif"
@@ -255,9 +321,6 @@ def test_refresh_product_overwrites_cog_and_reseeds_cache(tmp_path):
     class Repository:
         """Имитирует persistence публикации."""
 
-        def add_layer(self, _layer):
-            """Имитирует сохранение слоя."""
-
         def bounds(self, **_options):
             """Возвращает валидные границы хозяйства."""
             return 1.0, 2.0, 3.0, 4.0
@@ -273,9 +336,10 @@ def test_refresh_product_overwrites_cog_and_reseeds_cache(tmp_path):
         refresh_products={"ndvi"},
     )
 
-    success, _layer_name = publisher._publish_file(source)
+    success, _layer_name, layer = publisher._publish_file(source)
 
     assert success is True
+    assert layer is not None
     assert optimized == [(source, destination)]
     assert seed_calls[0]["reseed"] is True
 
@@ -315,10 +379,6 @@ def test_existing_layer_skips_reconfiguration_and_cache_seed(tmp_path):
     class Repository:
         """Фиксирует идемпотентное обновление записи слоя."""
 
-        def add_layer(self, layer):
-            """Запоминает запись слоя."""
-            saved.append(layer)
-
         def bounds(self, **_options):
             """Запрещает лишнее чтение границ."""
             pytest.fail("Границы без seed не требуются")
@@ -335,7 +395,9 @@ def test_existing_layer_skips_reconfiguration_and_cache_seed(tmp_path):
         ),
     )
 
-    success, _layer_name = publisher._publish_file(source)
+    success, _layer_name, layer = publisher._publish_file(source)
 
     assert success is True
+    assert layer is not None
+    saved.append(layer)
     assert len(saved) == 1

@@ -1,7 +1,7 @@
 """Application service полного сценария обработки архива."""
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Protocol
@@ -11,9 +11,8 @@ from domain.models import LayerSourceMetadata
 
 from .discovery import ArchivePairFinder
 from .domain import (
-    AGROIDS_BY_TILE,
-    PROCESSING_ALGORITHM_VERSION,
     ProcessingRunSummary,
+    build_layer_source_metadata,
 )
 from .exceptions import ProcessingRunError
 
@@ -32,7 +31,11 @@ class ProcessingStatusReader(Protocol):
 class ArchivePairProcessor(Protocol):
     """Порт обработки согласованной пары ZIP-архивов."""
 
-    def process(self, pair) -> None:
+    def process(
+            self,
+            pair,
+            target_agroids: tuple[int, ...] | None = None,
+    ) -> None:
         """Обрабатывает оба архива и общие этапы одной даты."""
         ...
 
@@ -91,13 +94,19 @@ class ProcessingService:
         """Отбирает пары по периоду, обрабатывает и публикует каждую дату."""
         run_started = perf_counter()
         root = Path(archive_root) if archive_root else self.archive_root
-        pairs = self.pair_finder.find(root)
+        pairs = self.pair_finder.find(
+            root,
+            start_date=start_date,
+            end_date=end_date,
+        )
         candidates = []
         skipped = 0
 
         self.logger.info("Сканируем архив: %s", root)
         self.logger.info("Найдено валидных пар: %d", len(pairs))
 
+        # Защитная фильтрация сохраняет корректность для альтернативных
+        # реализаций finder, которые могут не поддерживать ранний отбор.
         for pair in pairs:
             acquired_at = datetime.combine(
                 pair.acquired_on, datetime.min.time()
@@ -106,7 +115,6 @@ class ProcessingService:
                 continue
             if end_date and acquired_at >= end_date:
                 continue
-
             candidates.append(pair)
 
         missing_by_date = {}
@@ -115,8 +123,9 @@ class ProcessingService:
                 list(dict.fromkeys(pair.acquired_on for pair in candidates))
             )
 
-        selected = []
+        selected: list[tuple[object, tuple[int, ...] | None]] = []
         for pair in candidates:
+            target_agroids = None
             if not debug and not self.process_completed:
                 missing = missing_by_date[pair.acquired_on]
                 if not missing:
@@ -131,17 +140,18 @@ class ProcessingService:
                     pair.acquired_on,
                     ", ".join(map(str, missing)),
                 )
+                target_agroids = tuple(missing)
             elif self.process_completed:
                 self.logger.info(
                     "RECALCULATE %s → принудительная обработка NDVI",
                     pair.acquired_on,
                 )
 
-            selected.append(pair)
+            selected.append((pair, target_agroids))
 
         failed_dates: list[str] = []
         processed = 0
-        for index, pair in enumerate(selected, start=1):
+        for index, (pair, target_agroids) in enumerate(selected, start=1):
             pair_started = perf_counter()
             date_label = pair.acquired_on.isoformat()
             self.logger.info(
@@ -160,7 +170,10 @@ class ProcessingService:
                         perf_counter() - cleanup_started,
                     )
                 processing_started = perf_counter()
-                self.pair_processor.process(pair)
+                self.pair_processor.process(
+                    pair,
+                    target_agroids=target_agroids,
+                )
                 self.logger.info(
                     "PROCESSING OK: %s | %.2f сек.",
                     date_label,
@@ -169,7 +182,7 @@ class ProcessingService:
                 publish_started = perf_counter()
                 self.publisher.publish_date(
                     pair.acquired_on,
-                    self._source_metadata(pair),
+                    build_layer_source_metadata(pair),
                 )
                 self.logger.info(
                     "PUBLISH OK: %s | %.2f сек.",
@@ -234,26 +247,3 @@ class ProcessingService:
             perf_counter() - run_started,
         )
         return summary
-
-    @staticmethod
-    def _source_metadata(pair) -> LayerSourceMetadata:
-        """Строит метаданные публикации и привязку хозяйств к тайлам пары."""
-        by_agroid: dict[int, list[str]] = {}
-        for tile, agroids in AGROIDS_BY_TILE.items():
-            source_tile = tile.upper()
-            for agroid in agroids:
-                by_agroid.setdefault(agroid, []).append(source_tile)
-        acquired_at = pair.acquired_at
-        if acquired_at.tzinfo is None:
-            acquired_at = acquired_at.replace(tzinfo=UTC)
-        return LayerSourceMetadata(
-            acquired_at=acquired_at,
-            satellite=pair.satellite.upper(),
-            source_level=pair.level.name,
-            processing_baseline=pair.processing_baseline,
-            source_tiles_by_agroid={
-                agroid: tuple(tiles)
-                for agroid, tiles in by_agroid.items()
-            },
-            algorithm_version=PROCESSING_ALGORITHM_VERSION,
-        )

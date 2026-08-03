@@ -13,27 +13,58 @@ from core.logging import get_logger
 logger = get_logger("CdseUtils")
 
 _TILE_RE = re.compile(r"_T(\d{2}[A-Z]{3})_")
+_ACQUIRED_DATE_RE = re.compile(r"_(\d{8})T\d{6}")
 
 
-def build_archive_index(base_path: str | Path) -> set[str]:
-    """Возвращает список существующих архивов в base_path."""
+def build_archive_index(
+        base_path: str | Path,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        tiles: list[str] | tuple[str, ...] = (),
+) -> set[str]:
+    """Индексирует только архивы нужного периода и тайлов."""
     existing: set[str] = set()
+    base = Path(base_path)
 
-    if not os.path.exists(base_path):
+    if not base.exists():
         return existing
 
-    for _root, _, files in os.walk(base_path):
-        for f in files:
-            if not f.lower().endswith(".zip"):
-                continue
-            archive = Path(_root) / f
-            if zipfile.is_zipfile(archive):
-                existing.add(f)
-            else:
-                logger.warning(
-                    "Повреждённый ZIP исключён из индекса: %s",
-                    archive,
-                )
+    roots = [base]
+    if start_date is not None and end_date is not None and tiles:
+        normalized_tiles = tuple(normalize_tile(tile) for tile in tiles)
+        roots = [
+            base / str(year) / tile
+            for year in range(start_date.year, end_date.year + 1)
+            for tile in normalized_tiles
+        ]
+
+    for root in roots:
+        if not root.exists():
+            continue
+        for _root, _, files in os.walk(root):
+            for filename in files:
+                if not filename.lower().endswith(".zip"):
+                    continue
+                if start_date is not None and end_date is not None:
+                    match = _ACQUIRED_DATE_RE.search(filename)
+                    if match is None:
+                        continue
+                    acquired_on = date.fromisoformat(
+                        f"{match.group(1)[:4]}-"
+                        f"{match.group(1)[4:6]}-"
+                        f"{match.group(1)[6:]}"
+                    )
+                    if not start_date <= acquired_on <= end_date:
+                        continue
+                archive = Path(_root) / filename
+                if zipfile.is_zipfile(archive):
+                    existing.add(filename)
+                else:
+                    logger.warning(
+                        "Повреждённый ZIP исключён из индекса: %s",
+                        archive,
+                    )
 
     return existing
 

@@ -184,7 +184,7 @@ class MosaicPaths(ScenePaths):
 
 
 class CloudMaskPaths(ScenePaths):
-    """Пути ресемплинга SCL и фильтрации NDVI."""
+    """Пути ресемплинга SCL к сетке NDVI."""
 
     def ndvi(self, agroid: int) -> str:
         """Возвращает путь исходного NDVI хозяйства."""
@@ -207,26 +207,15 @@ class CloudMaskPaths(ScenePaths):
             / self._name(f"a{agroid}_scl_10m_3857.tif")
         )
 
-    def filtered_ndvi(self, agroid: int) -> str:
-        """Возвращает путь NDVI после фильтрации облачности."""
-        return str(
-            self.workspace.intermediate
-            / self._name(f"a{agroid}_ndvi_10m_3857_filtered.tif")
-        )
-
-
 class NdviStatisticsPaths(ScenePaths):
     """Источники NDVI и временные файлы статистики полей."""
 
     def ndvi_source(self, agroid: int) -> str:
-        """Выбирает корректный NDVI-источник с учётом уровня продукта."""
-        if self.scene.level is ProductLevel.L1C:
-            root = self.workspace.processed
-            suffix = "ndvi_10m_3857.tif"
-        else:
-            root = self.workspace.intermediate
-            suffix = "ndvi_10m_3857_filtered.tif"
-        return str(root / self._name(f"a{agroid}_{suffix}"))
+        """Возвращает визуальный NDVI; SCL применяется внутри анализатора."""
+        return str(
+            self.workspace.processed
+            / self._name(f"a{agroid}_ndvi_10m_3857.tif")
+        )
 
     def field_geojson(self, agroid: int, field_code: str) -> str:
         """Возвращает путь временной GeoJSON-маски поля."""

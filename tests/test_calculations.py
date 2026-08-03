@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from processing.calculations import apply_scl_mask, normalized_difference
+from processing.calculations import normalized_difference
 
 
 def test_normalized_difference_calculates_and_clips_values():
@@ -47,20 +47,3 @@ def test_normalized_difference_applies_offsets_and_rejects_source_nodata():
     )
 
     np.testing.assert_allclose(result, [[1.0 / 3.0, -42.0]])
-
-
-def test_scl_mask_keeps_only_valid_finite_ndvi():
-    """SCL-маска сохраняет допустимые конечные значения NDVI."""
-    ndvi = np.array([[0.5, 0.7], [np.nan, 0.3]])
-    scl = np.array([[4, 3], [5, 7]])
-
-    result = apply_scl_mask(ndvi, scl, nodata=-42.0)
-
-    np.testing.assert_allclose(result, [[0.5, -42.0], [-42.0, 0.3]])
-    assert result.dtype == np.float32
-
-
-def test_scl_mask_rejects_different_shapes():
-    """NDVI и SCL на разных сетках отклоняются до фильтрации."""
-    with pytest.raises(ValueError, match="одинаковую форму"):
-        apply_scl_mask(np.ones((2, 2)), np.ones((2, 3)))

@@ -119,3 +119,29 @@ class LayerSourceMetadata:
     source_tiles_by_agroid: dict[int, tuple[str, ...]]
     # Версия алгоритма формирования визуальных слоёв.
     algorithm_version: str
+
+
+@dataclass(frozen=True)
+class LayerMetadataUpdate:
+    """Метаданные существующих слоёв одного хозяйства за дату съёмки."""
+
+    # Календарная дата спутниковой съёмки.
+    acquired_on: date
+    # Хозяйство, слои которого требуется обновить.
+    agroid: int
+    # Точное время начала съёмки в UTC.
+    acquired_at: datetime
+    # Спутник, выполнивший съёмку.
+    satellite: str
+    # Уровень обработки исходного продукта.
+    source_level: str
+    # Processing Baseline исходного продукта.
+    processing_baseline: int | None
+    # Исходные тайлы, покрывающие хозяйство.
+    source_tiles: tuple[str, ...]
+    # Версия-заглушка для слоя с неизвестным историческим алгоритмом.
+    fallback_algorithm_version: str = "legacy"
+    # Пространственное разрешение опубликованного растра в метрах.
+    resolution_m: int = 10
+    # Признак маскирования отображаемого растра облаками.
+    is_cloud_masked: bool = False

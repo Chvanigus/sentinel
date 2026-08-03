@@ -81,7 +81,12 @@ class Command(BaseCommand):
 
         service = build_cdse_service()
 
-        archive_index = build_archive_index(ARCHIVE_ROOT)
+        archive_index = build_archive_index(
+            ARCHIVE_ROOT,
+            start_date=date.fromisoformat(start),
+            end_date=date.fromisoformat(end),
+            tiles=tuple(TARGET_TILES),
+        )
 
         products = service.search(
             collection=L2A_COLLECTION,

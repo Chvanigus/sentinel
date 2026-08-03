@@ -51,7 +51,7 @@ def test_archive_pair_finder_has_single_discovery_responsibility():
         "invalid.zip": None,
     }
     finder = ArchivePairFinder(
-        zip_iterator=lambda _root: archives,
+        zip_iterator=lambda _root, **_options: archives,
         name_parser=parsed.get,
     )
 
@@ -78,7 +78,7 @@ def test_archive_pair_finder_never_mixes_different_acquisitions():
     }
 
     pairs = ArchivePairFinder(
-        zip_iterator=lambda _root: archives,
+        zip_iterator=lambda _root, **_options: archives,
         name_parser=parsed.get,
     ).find("/archive")
 
@@ -166,11 +166,6 @@ def test_pair_processor_runs_shared_steps_once(monkeypatch):
     )
     monkeypatch.setattr(
         pair_processor_module,
-        "FilterNDVIProcessor",
-        processor("filter-ndvi"),
-    )
-    monkeypatch.setattr(
-        pair_processor_module,
         "NdviStatisticsProcessor",
         processor("statistics"),
     )
@@ -181,14 +176,26 @@ def test_pair_processor_runs_shared_steps_once(monkeypatch):
         "ndvi",
         "geoware",
     )))
-    pair_processor_module.SentinelPairProcessor(
+
+    class ArchiveStorage:
+        """Управляет тестовым попаданием в tile-level кэш."""
+
+        cached = False
+
+        def restore(self, *_args):
+            """Возвращает настроенный признак наличия продукта."""
+            return self.cached
+
+    archive_storage = ArchiveStorage()
+    pair_processor = pair_processor_module.SentinelPairProcessor(
         temporary_root="temporary",
         workspace=workspace,
         options=ProcessingOptions(3857, -9999.0),
         field_data=object(),
-        output_archive=object(),
+        output_archive=archive_storage,
         geometry_exporter=object(),
-    ).process(pair(1))
+    )
+    pair_processor.process(pair(1))
 
     assert events == [
         ("extract", "t38ula"),
@@ -199,7 +206,27 @@ def test_pair_processor_runs_shared_steps_once(monkeypatch):
         ("crop", "t38ulb"),
         ("combine", "t38ula"),
         ("rescale-scl", "t38ula"),
-        ("filter-ndvi", "t38ula"),
+        ("statistics", "t38ula"),
+    ]
+
+    events.clear()
+    pair_processor.process(pair(1), target_agroids=(3,))
+
+    assert events == [
+        ("extract", "t38ula"),
+        ("tile", "t38ula"),
+        ("crop", "t38ula"),
+        ("rescale-scl", "t38ula"),
+        ("statistics", "t38ula"),
+    ]
+
+    archive_storage.cached = True
+    events.clear()
+    pair_processor.process(pair(1), target_agroids=(3,))
+
+    assert events == [
+        ("crop", "t38ula"),
+        ("rescale-scl", "t38ula"),
         ("statistics", "t38ula"),
     ]
 
@@ -210,7 +237,7 @@ def test_processing_service_coordinates_ports_without_infrastructure():
     class Finder:
         """Возвращает фиксированный список пар."""
 
-        def find(self, _root):
+        def find(self, _root, **_options):
             """Возвращает две тестовые пары."""
             return [pair(1), pair(2)]
 
@@ -230,9 +257,9 @@ def test_processing_service_coordinates_ports_without_infrastructure():
         def __init__(self):
             self.archives = []
 
-        def process(self, archive_pair):
+        def process(self, archive_pair, target_agroids=None):
             """Регистрирует обработанную пару архивов."""
-            self.archives.append(archive_pair)
+            self.archives.append((archive_pair, target_agroids))
 
     class Publisher:
         """Считает вызовы публикации."""
@@ -266,7 +293,7 @@ def test_processing_service_coordinates_ports_without_infrastructure():
 
     summary = service.run()
 
-    assert processor.archives == [pair(2)]
+    assert processor.archives == [(pair(2), (3,))]
     assert publisher.calls == 1
     assert cleaner.calls == 1
     assert summary.discovered == 2
@@ -280,7 +307,7 @@ def test_processing_service_preserves_failed_date_and_cleans_successful_date():
     class Finder:
         """Возвращает две тестовые пары."""
 
-        def find(self, _root):
+        def find(self, _root, **_options):
             """Возвращает пары успешной и ошибочной дат."""
             return [pair(1), pair(2)]
 
@@ -294,8 +321,9 @@ def test_processing_service_preserves_failed_date_and_cleans_successful_date():
     class Processor:
         """Имитирует ошибку первой даты."""
 
-        def process(self, archive_pair):
+        def process(self, archive_pair, target_agroids=None):
             """Падает на паре архивов первого дня."""
+            assert target_agroids == (1,)
             if archive_pair.acquired_on.day == 1:
                 raise RuntimeError("broken scene")
 
@@ -341,7 +369,7 @@ def test_recalculation_processes_completed_dates_and_cleans_before_work():
     class Finder:
         """Возвращает одну завершённую пару."""
 
-        def find(self, _root):
+        def find(self, _root, **_options):
             """Возвращает тестовую пару."""
             return [pair(1)]
 
@@ -357,8 +385,9 @@ def test_recalculation_processes_completed_dates_and_cleans_before_work():
     class Processor:
         """Фиксирует обработку архивов."""
 
-        def process(self, archive_pair):
+        def process(self, archive_pair, target_agroids=None):
             """Добавляет пару архивов в журнал."""
+            assert target_agroids is None
             events.append(("process", archive_pair))
 
     class Publisher:
@@ -404,6 +433,7 @@ def test_application_modules_do_not_import_infrastructure():
     modules = [
         root / "processing" / "domain.py",
         root / "processing" / "discovery.py",
+        root / "processing" / "layer_metadata.py",
         root / "processing" / "pair_processor.py",
         root / "processing" / "service.py",
         root / "processing" / "paths.py",
@@ -515,11 +545,12 @@ def test_dependencies_target_python313_and_numpy2():
     for dependency in (
             "numpy>=2.1,<3",
             "opencv-python-headless>=4.12,<5",
-            "scipy>=1.15,<2",
     ):
         assert dependency in requirements
         assert f'"{dependency}"' in project
     assert 'requires-python = ">=3.13"' in project
+    assert "scipy" not in requirements
+    assert "scipy" not in project
 
 
 def test_python_sources_have_russian_docstrings():
