@@ -243,7 +243,7 @@ def test_field_repository_reads_geometry_batch_in_one_scope():
     assert result == {10: "geometry-10", 20: "geometry-20"}
     assert len(gateway.calls) == 1
     query, params = gateway.calls[0]
-    assert "unnest(%s::bigint[])" in query
+    assert "unnest(%s::integer[])" in query
     assert "CROSS JOIN LATERAL" in query
     assert params == ([10, 20], 2026)
 

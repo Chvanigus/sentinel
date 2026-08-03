@@ -326,7 +326,7 @@ class FieldRepository:
         rows = self.gateway.rows(
             """
             SELECT requested.fieldid, shape.*
-            FROM unnest(%s::bigint[]) AS requested(fieldid)
+            FROM unnest(%s::integer[]) AS requested(fieldid)
             CROSS JOIN LATERAL gpgeo.__geo_get_field_shape(
                 requested.fieldid,
                 %s
