@@ -174,25 +174,12 @@ def test_pair_processor_runs_shared_steps_once(monkeypatch):
         "intermediate",
         "processed",
         "ndvi",
-        "geoware",
     )))
-
-    class ArchiveStorage:
-        """Управляет тестовым попаданием в tile-level кэш."""
-
-        cached = False
-
-        def restore(self, *_args):
-            """Возвращает настроенный признак наличия продукта."""
-            return self.cached
-
-    archive_storage = ArchiveStorage()
     pair_processor = pair_processor_module.SentinelPairProcessor(
         temporary_root="temporary",
         workspace=workspace,
         options=ProcessingOptions(3857, -9999.0),
         field_data=object(),
-        output_archive=archive_storage,
         geometry_exporter=object(),
     )
     pair_processor.process(pair(1))
@@ -219,17 +206,6 @@ def test_pair_processor_runs_shared_steps_once(monkeypatch):
         ("rescale-scl", "t38ula"),
         ("statistics", "t38ula"),
     ]
-
-    archive_storage.cached = True
-    events.clear()
-    pair_processor.process(pair(1), target_agroids=(3,))
-
-    assert events == [
-        ("crop", "t38ula"),
-        ("rescale-scl", "t38ula"),
-        ("statistics", "t38ula"),
-    ]
-
 
 def test_processing_service_coordinates_ports_without_infrastructure():
     """Service координирует порты, не требуя реальной инфраструктуры."""

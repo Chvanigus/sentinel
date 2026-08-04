@@ -5,10 +5,29 @@ import subprocess
 import time
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 
 from core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _temporary_cog_path(destination: Path) -> Path:
+    """Возвращает уникальный временный TIFF рядом с итоговым файлом."""
+    return destination.with_name(
+        f".{destination.stem}.{uuid4().hex}.tmp{destination.suffix}"
+    )
+
+
+def _remove_gdal_artifacts(temporary: Path) -> None:
+    """Удаляет временный TIFF и возможные служебные файлы GDAL."""
+    for artifact in (
+            temporary,
+            Path(f"{temporary}.ovr"),
+            Path(f"{temporary}.ovr.tmp"),
+            Path(f"{temporary}.aux.xml"),
+    ):
+        artifact.unlink(missing_ok=True)
 
 
 def optimize_geotiff(
@@ -22,9 +41,8 @@ def optimize_geotiff(
         raise ValueError("retries должен быть положительным")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
-    temporary = dst.with_suffix(dst.suffix + ".tmp")
-
     for attempt in range(1, retries + 1):
+        temporary = _temporary_cog_path(dst)
         attempt_started = perf_counter()
         try:
             subprocess.check_call(
@@ -74,5 +92,4 @@ def optimize_geotiff(
             )
             time.sleep(delay)
         finally:
-            if temporary.exists():
-                temporary.unlink(missing_ok=True)
+            _remove_gdal_artifacts(temporary)

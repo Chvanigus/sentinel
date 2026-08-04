@@ -29,18 +29,6 @@ class RecordingPaths:
         return self.source_paths[band]
 
 
-class RecordingArchive:
-    """Фиксирует результаты, переданные в долговременный архив."""
-
-    def __init__(self):
-        """Создаёт пустой журнал операций архивирования."""
-        self.stores = []
-
-    def store(self, scene, source, product):
-        """Запоминает сцену, исходный путь и тип продукта."""
-        self.stores.append((scene, source, product))
-
-
 RASTER_CONVERSIONS = []
 
 
@@ -84,11 +72,11 @@ def destinations(tmp_path):
     }
 
 
-def test_run_converts_rasters_calculates_indices_and_archives_all(
+def test_run_converts_rasters_and_calculates_all_indices(
         tmp_path,
         monkeypatch,
 ):
-    """Полный L2A-запуск создаёт и архивирует четыре tile-продукта."""
+    """Полный L2A-запуск создаёт четыре рабочих tile-продукта."""
     result_paths = destinations(tmp_path)
     paths = RecordingPaths(
         result_paths,
@@ -100,7 +88,6 @@ def test_run_converts_rasters_calculates_indices_and_archives_all(
             "b08": ["b08.jp2"],
         },
     )
-    archive = RecordingArchive()
     RASTER_CONVERSIONS.clear()
     RecordingIndexProcessor.initializations = []
     RecordingIndexProcessor.creations = []
@@ -117,7 +104,6 @@ def test_run_converts_rasters_calculates_indices_and_archives_all(
     TileImageProcessor(
         current_scene,
         paths,
-        archive,
         SimpleNamespace(nodata=-42.0),
     ).run()
 
@@ -142,15 +128,7 @@ def test_run_converts_rasters_calculates_indices_and_archives_all(
             "ndwi": str(result_paths["ndwi"]),
         }
     ]
-    assert [(source, product) for _, source, product in archive.stores] == [
-        (str(result_paths["tci"]), "tci"),
-        (str(result_paths["scl"]), "scl"),
-        (str(result_paths["ndvi"]), "ndvi"),
-        (str(result_paths["ndwi"]), "ndwi"),
-    ]
-
-
-def test_indices_resume_archives_existing_and_reads_only_needed_bands(
+def test_indices_resume_reads_only_needed_bands(
         tmp_path,
         monkeypatch,
 ):
@@ -164,7 +142,6 @@ def test_indices_resume_archives_existing_and_reads_only_needed_bands(
             "b08": ["b08.jp2"],
         },
     )
-    archive = RecordingArchive()
     RecordingIndexProcessor.initializations = []
     RecordingIndexProcessor.creations = []
     monkeypatch.setattr(
@@ -176,7 +153,6 @@ def test_indices_resume_archives_existing_and_reads_only_needed_bands(
     TileImageProcessor(
         current_scene,
         paths,
-        archive,
         SimpleNamespace(nodata=-9999.0),
     )._process_indices()
 
@@ -195,12 +171,6 @@ def test_indices_resume_archives_existing_and_reads_only_needed_bands(
     assert RecordingIndexProcessor.creations == [
         {"ndvi": str(result_paths["ndvi"])}
     ]
-    assert [(source, product) for _, source, product in archive.stores] == [
-        (str(result_paths["ndwi"]), "ndwi"),
-        (str(result_paths["ndvi"]), "ndvi"),
-    ]
-
-
 def test_indices_report_all_missing_bands_in_stable_order(tmp_path):
     """Ошибка отсутствующих каналов перечисляет их детерминированно."""
     paths = RecordingPaths(
@@ -219,7 +189,6 @@ def test_indices_report_all_missing_bands_in_stable_order(tmp_path):
         TileImageProcessor(
             make_scene(),
             paths,
-            RecordingArchive(),
             SimpleNamespace(nodata=-9999.0),
         )._process_indices()
 
@@ -232,20 +201,15 @@ def test_l1c_raster_stage_does_not_request_scl(tmp_path):
         result_paths,
         {"tci": ["tci.jp2"]},
     )
-    archive = RecordingArchive()
     current_scene = make_scene(ProductLevel.L1C)
 
     TileImageProcessor(
         current_scene,
         paths,
-        archive,
         SimpleNamespace(nodata=-9999.0),
     )._process_raster_stages()
 
     assert paths.source_requests == ["tci"]
-    assert archive.stores == [
-        (current_scene, str(result_paths["tci"]), "tci")
-    ]
 
 
 def test_ndvi_only_mode_does_not_read_unrelated_l1c_bands(
@@ -261,7 +225,6 @@ def test_ndvi_only_mode_does_not_read_unrelated_l1c_bands(
             "b08": ["b08.jp2"],
         },
     )
-    archive = RecordingArchive()
     RecordingIndexProcessor.initializations = []
     RecordingIndexProcessor.creations = []
     monkeypatch.setattr(
@@ -272,7 +235,6 @@ def test_ndvi_only_mode_does_not_read_unrelated_l1c_bands(
     TileImageProcessor(
         make_scene(ProductLevel.L1C),
         paths,
-        archive,
         SimpleNamespace(nodata=-9999.0),
         products={"ndvi", "scl"},
     ).run()

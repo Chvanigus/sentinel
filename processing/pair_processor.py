@@ -36,7 +36,6 @@ class SentinelPairProcessor:
             workspace,
             options,
             field_data,
-            output_archive,
             geometry_exporter,
             products=None,
             ndvi_only: bool = False,
@@ -46,7 +45,6 @@ class SentinelPairProcessor:
         self.workspace = workspace
         self.options = options
         self.field_data = field_data
-        self.output_archive = output_archive
         self.geometry_exporter = geometry_exporter
         self.products = products
         self.ndvi_only = ndvi_only
@@ -90,28 +88,18 @@ class SentinelPairProcessor:
                         if agroid in targets
                     ),
                 )
-            restored = (
-                not self.ndvi_only
-                and self._restore_tile_products(scene)
+            self._run_step(
+                "extract",
+                archive_path.name,
+                lambda current_archive=archive, current=scene: (
+                    self._extract_bands(current_archive, current)
+                ),
             )
-            if restored:
-                self.logger.info(
-                    "TILE CACHE HIT: %s",
-                    self._scene_label(scene),
-                )
-            else:
-                self._run_step(
-                    "extract",
-                    archive_path.name,
-                    lambda current_archive=archive, current=scene: (
-                        self._extract_bands(current_archive, current)
-                    ),
-                )
-                self._run_step(
-                    "tile",
-                    self._scene_label(scene),
-                    lambda current=scene: self._process_tile(current),
-                )
+            self._run_step(
+                "tile",
+                self._scene_label(scene),
+                lambda current=scene: self._process_tile(current),
+            )
             self._run_step(
                 "crop",
                 self._scene_label(scene),
@@ -175,32 +163,6 @@ class SentinelPairProcessor:
             extracted_path,
         )
 
-    def _restore_tile_products(self, scene: SceneContext) -> bool:
-        """Восстанавливает все tile-level продукты сцены из geoware-кэша."""
-        path_type = (
-            L1CProductPaths
-            if scene.level is ProductLevel.L1C
-            else L2AProductPaths
-        )
-        paths = path_type(scene, self.workspace)
-        products = self.products or frozenset({"tci", "ndvi", "ndwi", "scl"})
-        selected = [
-            product
-            for product in ("tci", "ndvi", "ndwi", "scl")
-            if product in products and not (
-                product == "scl" and scene.level is ProductLevel.L1C
-            )
-        ]
-        restored = [
-            self.output_archive.restore(
-                scene,
-                paths.destination(product),
-                product,
-            )
-            for product in selected
-        ]
-        return bool(restored) and all(restored)
-
     def _process_tile(self, scene: SceneContext) -> None:
         """Создаёт tile-level продукты одной сцены."""
         path_type = (
@@ -211,7 +173,6 @@ class SentinelPairProcessor:
         TileImageProcessor(
             scene,
             path_type(scene, self.workspace),
-            self.output_archive,
             self.options,
             products=self.products,
         ).run()

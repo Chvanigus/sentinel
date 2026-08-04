@@ -36,7 +36,6 @@ def workspace(tmp_path: Path) -> WorkspacePaths:
         intermediate=tmp_path / "intermediate",
         processed=tmp_path / "processed",
         ndvi=tmp_path / "ndvi",
-        geoware=tmp_path / "geoware",
     )
 
 

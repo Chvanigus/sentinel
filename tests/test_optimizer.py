@@ -29,7 +29,10 @@ def test_optimizer_writes_temporary_cog_and_replaces_destination(
 
     assert destination.read_bytes() == b"optimized"
     assert "NUM_THREADS=ALL_CPUS" in calls[0]
-    assert not destination.with_suffix(".tif.tmp").exists()
+    temporary = Path(calls[0][-1])
+    assert temporary.parent == destination.parent
+    assert temporary.name.endswith(".tmp.tif")
+    assert not temporary.exists()
 
 
 def test_optimizer_retries_failed_gdal_call(tmp_path, monkeypatch):
@@ -55,6 +58,35 @@ def test_optimizer_retries_failed_gdal_call(tmp_path, monkeypatch):
     assert len(attempts) == 2
     assert delays == [0.1]
     assert destination.is_file()
+
+
+def test_optimizer_removes_gdal_sidecars_before_retry(
+        tmp_path,
+        monkeypatch,
+):
+    """После сбоя оптимизатор удаляет sidecar и меняет временное имя."""
+    source = tmp_path / "source.tif"
+    destination = tmp_path / "result.tif"
+    source.write_bytes(b"source")
+    temporary_paths = []
+
+    def run(command):
+        """Имитирует оставленный GDAL файл обзоров после первого сбоя."""
+        temporary = Path(command[-1])
+        temporary_paths.append(temporary)
+        if len(temporary_paths) == 1:
+            Path(f"{temporary}.ovr.tmp").write_bytes(b"stale")
+            raise subprocess.CalledProcessError(1, command)
+        temporary.write_bytes(b"optimized")
+
+    monkeypatch.setattr(subprocess, "check_call", run)
+    monkeypatch.setattr("satgeo.optimizer.time.sleep", lambda _delay: None)
+
+    optimize_geotiff(source, destination, retries=2, delay=0)
+
+    assert temporary_paths[0] != temporary_paths[1]
+    assert not Path(f"{temporary_paths[0]}.ovr.tmp").exists()
+    assert destination.read_bytes() == b"optimized"
 
 
 def test_optimizer_rejects_non_positive_retries(tmp_path):

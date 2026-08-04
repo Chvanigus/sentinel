@@ -17,14 +17,12 @@ class TileImageProcessor:
             self,
             scene,
             paths,
-            output_archive,
             options,
             products=None,
     ):
         self.scene = scene
         self.paths = paths
         self.logger = get_logger(self.__class__.__name__)
-        self.output_archive = output_archive
         self.options = options
         self.products = frozenset(products or self.PRODUCTS)
         unknown = self.products - self.PRODUCTS
@@ -65,13 +63,10 @@ class TileImageProcessor:
             dst = self.paths.destination(stage)
             if os.path.exists(dst):
                 self.logger.info("%s уже есть, пропуск", stage.upper())
-                self.output_archive.store(self.scene, dst, stage)
                 continue
 
             translate_to_geotiff(src, dst)
             self.logger.info("%s готово: %s", stage.upper(), dst)
-
-            self.output_archive.store(self.scene, dst, stage)
 
     def _process_indices(self) -> None:
         """Создаёт отсутствующие NDVI/NDWI с однократным чтением B08."""
@@ -82,11 +77,6 @@ class TileImageProcessor:
             destination = self.paths.destination(product)
             if os.path.exists(destination):
                 self.logger.info("%s уже есть, пропуск", product.upper())
-                self.output_archive.store(
-                    self.scene,
-                    destination,
-                    product,
-                )
             else:
                 outputs[product] = destination
         if not outputs:
@@ -130,9 +120,4 @@ class TileImageProcessor:
                 "%s готово: %s",
                 product.upper(),
                 destination,
-            )
-            self.output_archive.store(
-                self.scene,
-                destination,
-                product,
             )

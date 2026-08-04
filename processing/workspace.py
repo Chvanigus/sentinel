@@ -13,7 +13,6 @@ class WorkspacePaths:
     intermediate: Path
     processed: Path
     ndvi: Path
-    geoware: Path
 
 
 @dataclass(frozen=True)

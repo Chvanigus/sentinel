@@ -65,7 +65,7 @@ def build_pair_processor(
 ) -> SentinelPairProcessor:
     """Собирает единый обработчик пары из конкретных GIS-зависимостей."""
     from .pair_processor import SentinelPairProcessor
-    from .storage import FieldGeometryExporter, GeowareTileArchive
+    from .storage import FieldGeometryExporter
     from .workspace import ProcessingOptions, WorkspacePaths
 
     workspace = WorkspacePaths(
@@ -73,14 +73,12 @@ def build_pair_processor(
         intermediate=Path(settings.INTERMEDIATE),
         processed=Path(settings.PROCESSED_DIR),
         ndvi=Path(settings.NDVI_DIR),
-        geoware=Path(settings.GS_DATA_ROOT),
     )
     options = ProcessingOptions(
         destination_srid=settings.DESTSRID,
         nodata=settings.NODATA,
     )
     field_data = PostgisFieldDataProvider()
-    output_archive = GeowareTileArchive(workspace.geoware)
     geometry_exporter = FieldGeometryExporter()
     selected_products = (
         frozenset({"ndvi", "scl"})
@@ -93,7 +91,6 @@ def build_pair_processor(
         workspace=workspace,
         options=options,
         field_data=field_data,
-        output_archive=output_archive,
         geometry_exporter=geometry_exporter,
         products=selected_products,
         ndvi_only=recalculate_ndvi,
