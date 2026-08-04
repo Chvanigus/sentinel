@@ -16,6 +16,8 @@
 `.env`, архивы и конфигурация Xray находятся вне Git и не изменяются.
 Systemd-unit устанавливается один раз командой `make install-systemd`; обычный
 deploy не получает root-доступ и не перезапускает выполняющуюся обработку.
+Пошаговая замена VLESS Reality/gRPC-прокси с проверкой и откатом описана в
+[`XRAY_PROXY_REPLACEMENT.txt`](XRAY_PROXY_REPLACEMENT.txt).
 
 ## Одноразовая настройка SSH
 

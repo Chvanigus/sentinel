@@ -1,0 +1,318 @@
+ЗАМЕНА ПРОКСИ XRAY ДЛЯ SENTINEL
+================================
+
+Назначение
+----------
+
+Инструкция заменяет текущий прокси на сервере mainscript. Она рассчитана на
+VLESS-ссылку с transport=gRPC и security=Reality. Xray поднимает локальный
+SOCKS5-прокси только на 127.0.0.1:1080, а Sentinel использует его через:
+
+CDSE_PROXY=socks5h://127.0.0.1:1080
+
+VLESS-ссылка содержит секреты. Не сохранять её в Git, .env, текстовые файлы,
+тикеты и журналы. Команда read ниже вводит ссылку без отображения и без записи
+в историю shell.
+
+
+1. Подключиться к серверу и остановить ночной таймер
+----------------------------------------------------
+
+ssh sysop@mainscript
+cd /home/sysop/sentinel
+
+sudo systemctl stop sentinel-nightly.timer
+systemctl is-active sentinel-nightly.service
+
+Если команда показывает active, дождаться завершения обработки и снова
+проверить состояние. Не менять прокси и не останавливать oneshot принудительно
+во время скачивания. Состояние inactive для завершённой задачи нормально.
+Сам Xray пока не останавливать.
+
+
+2. Проверить существующую установку Xray
+----------------------------------------
+
+/usr/local/bin/xray version
+sudo systemctl status xray --no-pager
+
+Если /usr/local/bin/xray уже существует, перейти к пункту 3.
+
+Если Xray отсутствует, установить его:
+
+sudo apt update
+sudo apt install -y ca-certificates curl unzip
+
+curl -fsSL \
+  https://github.com/XTLS/Xray-install/raw/main/install-release.sh \
+  -o /tmp/xray-install.sh
+
+sudo bash /tmp/xray-install.sh install -u sysop
+/usr/local/bin/xray version
+
+
+3. Создать резервную копию рабочего конфига
+-------------------------------------------
+
+XRAY_CURRENT=/usr/local/etc/xray/config.json
+XRAY_BACKUP="${XRAY_CURRENT}.bak.$(date +%Y%m%d-%H%M%S)"
+export XRAY_CURRENT XRAY_BACKUP
+
+sudo cp -a -- "$XRAY_CURRENT" "$XRAY_BACKUP"
+echo "Резервная копия: $XRAY_BACKUP"
+
+Не закрывать текущую SSH-сессию до завершения проверки новой прокси.
+
+
+4. Преобразовать новую VLESS-ссылку в конфигурацию Xray
+------------------------------------------------------
+
+Вставить всю ссылку vless:// целиком после приглашения:
+
+read -rsp 'Вставьте новую VLESS URL: ' VLESS_URI
+echo
+export VLESS_URI
+
+XRAY_NEW="$(mktemp /tmp/xray-config.XXXXXX.json)"
+export XRAY_NEW
+
+python3 - <<'PY'
+import json
+import os
+from urllib.parse import parse_qs, unquote, urlsplit
+from uuid import UUID
+
+raw_url = os.environ["VLESS_URI"].strip()
+target = os.environ["XRAY_NEW"]
+url = urlsplit(raw_url)
+
+if url.scheme.lower() != "vless":
+    raise SystemExit("Ожидалась ссылка с протоколом vless://")
+
+try:
+    port = url.port
+except ValueError as exc:
+    raise SystemExit(f"Некорректный порт VLESS: {exc}") from exc
+
+user_id = unquote(url.username or "")
+try:
+    UUID(user_id)
+except ValueError as exc:
+    raise SystemExit("В VLESS URL отсутствует корректный UUID") from exc
+
+if not url.hostname or port is None:
+    raise SystemExit("В VLESS URL отсутствует адрес или порт сервера")
+
+query = {
+    key: values[-1]
+    for key, values in parse_qs(
+        url.query,
+        keep_blank_values=True,
+    ).items()
+}
+
+if query.get("type", "").lower() != "grpc":
+    raise SystemExit("Поддерживается только VLESS с type=grpc")
+if query.get("security", "").lower() != "reality":
+    raise SystemExit("Поддерживается только VLESS с security=reality")
+
+required = ("encryption", "fp", "pbk", "serviceName", "sid", "sni")
+missing = [name for name in required if not query.get(name)]
+if missing:
+    raise SystemExit(
+        "В VLESS URL отсутствуют параметры: " + ", ".join(missing)
+    )
+
+user = {
+    "id": user_id,
+    "encryption": query["encryption"],
+}
+if query.get("flow"):
+    user["flow"] = query["flow"]
+
+reality_settings = {
+    "serverName": query["sni"],
+    "fingerprint": query["fp"],
+    "publicKey": query["pbk"],
+    "shortId": query["sid"],
+}
+if query.get("spx"):
+    reality_settings["spiderX"] = query["spx"]
+
+grpc_settings = {
+    "serviceName": query["serviceName"],
+    "multiMode": False,
+}
+if query.get("authority"):
+    grpc_settings["authority"] = query["authority"]
+
+config = {
+    "log": {
+        "loglevel": "warning",
+    },
+    "inbounds": [
+        {
+            "tag": "local-socks",
+            "listen": "127.0.0.1",
+            "port": 1080,
+            "protocol": "socks",
+            "settings": {
+                "auth": "noauth",
+                "udp": True,
+            },
+        }
+    ],
+    "outbounds": [
+        {
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": url.hostname,
+                        "port": port,
+                        "users": [user],
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "grpc",
+                "security": "reality",
+                "realitySettings": reality_settings,
+                "grpcSettings": grpc_settings,
+            },
+        }
+    ],
+}
+
+with open(target, "w", encoding="utf-8") as stream:
+    json.dump(config, stream, ensure_ascii=False, indent=2)
+    stream.write("\n")
+
+print("Временная конфигурация создана без вывода секретов")
+PY
+
+unset VLESS_URI
+
+
+5. Проверить конфиг до перезапуска сервиса
+------------------------------------------
+
+/usr/local/bin/xray run -test -config "$XRAY_NEW"
+
+Продолжать только при сообщении Configuration OK. При ошибке рабочий Xray ещё
+не изменён: проверить новую VLESS-ссылку или запросить у провайдера ссылку
+VLESS + Reality + gRPC.
+
+
+6. Установить новый конфиг и перезапустить Xray
+----------------------------------------------
+
+sudo install \
+  -o sysop \
+  -g sysop \
+  -m 600 \
+  "$XRAY_NEW" \
+  "$XRAY_CURRENT"
+
+rm -f -- "$XRAY_NEW"
+unset XRAY_NEW
+
+sudo systemctl restart xray
+sudo systemctl status xray --no-pager
+
+Проверить, что SOCKS-порт слушает только localhost:
+
+sudo ss -ltnp | grep '127.0.0.1:1080'
+
+
+7. Проверить выход через прокси и доступ к CDSE
+------------------------------------------------
+
+curl \
+  --proxy socks5h://127.0.0.1:1080 \
+  --connect-timeout 20 \
+  https://api.ipify.org
+
+echo
+
+curl \
+  --proxy socks5h://127.0.0.1:1080 \
+  --connect-timeout 20 \
+  -o /dev/null \
+  -sS \
+  -w 'CDSE HTTP %{http_code}\n' \
+  'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/.well-known/openid-configuration'
+
+Ожидается внешний IP прокси и CDSE HTTP 200.
+
+
+8. Проверить настройки Sentinel
+-------------------------------
+
+В /home/sysop/sentinel/.env должна быть ровно такая строка:
+
+CDSE_PROXY=socks5h://127.0.0.1:1080
+
+Проверка без вывода остальных секретов .env:
+
+grep '^CDSE_PROXY=' /home/sysop/sentinel/.env
+
+Тест поиска через приложение:
+
+cd /home/sysop/sentinel
+make search DAYS=1
+
+
+9. Вернуть ночное расписание
+----------------------------
+
+sudo systemctl start sentinel-nightly.timer
+systemctl list-timers sentinel-nightly.timer --all
+
+После полной проверки переменные с путями можно убрать:
+
+unset XRAY_CURRENT XRAY_BACKUP
+
+
+ОТКАТ ПРИ НЕУДАЧЕ
+=================
+
+Если Xray не запускается или проверки из пункта 7 не проходят, восстановить
+резервную копию, путь к которой был напечатан в пункте 3:
+
+sudo install \
+  -o sysop \
+  -g sysop \
+  -m 600 \
+  "$XRAY_BACKUP" \
+  /usr/local/etc/xray/config.json
+
+sudo systemctl restart xray
+sudo systemctl status xray --no-pager
+sudo systemctl start sentinel-nightly.timer
+
+
+БЫСТРАЯ ДИАГНОСТИКА
+===================
+
+Последние сообщения Xray:
+
+sudo journalctl -u xray -n 100 --no-pager
+
+SOCKS возвращает Connection refused:
+
+- xray.service не запущен;
+- порт 127.0.0.1:1080 не слушается;
+- проверить systemctl status, journalctl и ss из инструкции.
+
+Connection reset или timeout через работающий SOCKS:
+
+- VLESS-узел недоступен, отключён или параметры ссылки устарели;
+- проверить адрес, UUID, public key, short ID, SNI, authority и serviceName;
+- если api.ipify.org работает, а CDSE получает timeout, данный прокси-узел не
+  обеспечивает маршрут до CDSE — потребуется другой узел.
+
+Проверка журналов ночной задачи:
+
+sudo journalctl -u sentinel-nightly.service -n 200 --no-pager
