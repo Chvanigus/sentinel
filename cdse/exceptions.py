@@ -10,6 +10,15 @@ class CdseAuthError(CdseError):
 class CdseQueryError(CdseError):
     """Ошибка OData-запроса."""
 
+    def __init__(
+            self,
+            message: str,
+            *,
+            status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class CdseDownloadError(CdseError):
     """Ошибка скачивания продукта."""

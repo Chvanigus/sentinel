@@ -13,9 +13,30 @@ from .download import ODataProductDownloader
 from .models import ProductRecord
 from .search import ODataProductSearcher
 from .selection import select_complete_acquisitions
-from .utils import normalize_tile
+from .utils import disk_usage, human_size, normalize_tile
 
 logger = get_logger(__name__)
+
+
+def _remaining_download_size(
+        products: list[ProductRecord],
+        archive_root: str | Path,
+) -> int | None:
+    """Оценивает оставшийся объём с учётом частично скачанных файлов."""
+    root = Path(archive_root)
+    remaining = 0
+    for product in products:
+        if product.size_bytes is None or product.size_bytes <= 0:
+            return None
+        temporary = (
+            root
+            / (product.date[:4] if product.date else "unknown")
+            / (normalize_tile(product.tile) or "unknown")
+            / f"{product.archive_name}.tmp"
+        )
+        downloaded = temporary.stat().st_size if temporary.is_file() else 0
+        remaining += max(product.size_bytes - downloaded, 0)
+    return remaining
 
 
 @dataclass(frozen=True)
@@ -132,43 +153,86 @@ class CdseService:
             if not product.exists
         ]
         if not tasks:
+            logger.info("Новых архивов для скачивания нет")
             return DownloadSummary(0, 0, 0)
+        if workers < 1:
+            raise ValueError("Число потоков скачивания должно быть положительным")
 
         downloaded = 0
         failed = 0
-        with ThreadPoolExecutor(
-                max_workers=max(1, int(workers))
-        ) as executor:
-            future_map = {
-                executor.submit(
-                    self.downloader.download_product,
-                    product=product,
-                    archive_root=archive_root,
-                ): product
-                for product in tasks
-            }
-            for future in tqdm(
-                    as_completed(future_map),
-                    total=len(future_map),
-                    desc="Скачивание архивов",
-                    unit="архив",
-                    leave=True,
-            ):
-                product = future_map[future]
-                try:
-                    future.result()
-                    downloaded += 1
-                except Exception as exc:
-                    failed += 1
-                    logger.exception(
-                        "Ошибка загрузки %s: %s",
-                        product.name,
-                        exc,
-                    )
+        sizes = [product.size_bytes for product in tasks]
+        total_bytes = (
+            sum(size for size in sizes if size is not None)
+            if all(size is not None and size > 0 for size in sizes)
+            else None
+        )
+        archive_path = Path(archive_root)
+        archive_path.mkdir(parents=True, exist_ok=True)
+        remaining_bytes = _remaining_download_size(tasks, archive_path)
+        if remaining_bytes is not None:
+            free_bytes, _total_disk_bytes = disk_usage(str(archive_path))
+            if remaining_bytes > free_bytes:
+                raise RuntimeError(
+                    "Недостаточно места для скачивания: требуется "
+                    f"{human_size(remaining_bytes)}, доступно "
+                    f"{human_size(free_bytes)}"
+                )
+        logger.info(
+            "Запланировано архивов: %s; потоков: %s; общий объём: %s; "
+            "осталось получить: %s",
+            len(tasks),
+            workers,
+            human_size(total_bytes) if total_bytes is not None else "неизвестен",
+            (
+                human_size(remaining_bytes)
+                if remaining_bytes is not None
+                else "неизвестно"
+            ),
+        )
+        with tqdm(
+                total=total_bytes,
+                desc="Скачано",
+                unit="Б",
+                unit_scale=True,
+                unit_divisor=1024,
+                dynamic_ncols=True,
+                mininterval=0.5,
+                leave=True,
+        ) as byte_progress:
+            with ThreadPoolExecutor(max_workers=int(workers)) as executor:
+                future_map = {
+                    executor.submit(
+                        self.downloader.download_product,
+                        product=product,
+                        archive_root=archive_root,
+                        progress=byte_progress.update,
+                    ): product
+                    for product in tasks
+                }
+                for future in as_completed(future_map):
+                    product = future_map[future]
+                    try:
+                        future.result()
+                        downloaded += 1
+                        byte_progress.set_postfix_str(
+                            f"архивов {downloaded}/{len(tasks)}"
+                        )
+                    except Exception as exc:
+                        failed += 1
+                        logger.exception(
+                            "Ошибка загрузки %s: %s",
+                            product.name,
+                            exc,
+                        )
 
         summary = DownloadSummary(len(tasks), downloaded, failed)
         if failed:
             raise RuntimeError(
                 f"Не удалось скачать архивов: {failed} из {len(tasks)}"
             )
+        logger.info(
+            "Скачивание завершено: %s из %s архивов",
+            downloaded,
+            len(tasks),
+        )
         return summary

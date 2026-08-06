@@ -10,11 +10,11 @@ from cdse import composition
 from cdse.auth import CdseCredentials, CdseTokenProvider
 from cdse.client import CdseODataClient
 from cdse.download import ODataProductDownloader
-from cdse.exceptions import CdseAuthError, CdseQueryError
+from cdse.exceptions import CdseAuthError, CdseDownloadError, CdseQueryError
 from cdse.models import ProductRecord
 from cdse.search import ODataProductSearcher
 from cdse.selection import select_complete_acquisitions
-from cdse.service import CdseService
+from cdse.service import CdseService, _remaining_download_size
 from cdse.utils import build_archive_index, normalize_tile, split_date_range
 from cli.commands.download import resolve_download_range
 from core.settings import (
@@ -72,9 +72,15 @@ def test_download_range_rejects_invalid_values(kwargs):
 class FakeResponse:
     """Минимальный потоковый HTTP-ответ для тестов загрузчика."""
 
-    def __init__(self, status_code: int, chunks: list[bytes]):
+    def __init__(
+            self,
+            status_code: int,
+            chunks: list[bytes],
+            headers: dict[str, str] | None = None,
+    ):
         self.status_code = status_code
         self._chunks = chunks
+        self.headers = headers or {}
         self.closed = False
 
     def raise_for_status(self):
@@ -143,26 +149,84 @@ def test_resume_overwrites_partial_file_when_server_ignores_range(tmp_path):
     partial = tmp_path / "scene.zip.tmp"
     partial.write_bytes(b"partial-")
     response = FakeResponse(200, [b"complete"])
+    progress = []
 
     ODataProductDownloader(
         FakeDownloadClient(response)
-    )._download_with_resume("id", partial)
+    )._download_with_resume("id", partial, progress=progress.append)
 
     assert partial.read_bytes() == b"complete"
     assert response.closed is True
+    assert sum(progress) == len(b"complete")
 
 
 def test_resume_appends_when_server_returns_partial_content(tmp_path):
     """Ответ 206 дописывает продолжение во временный файл."""
     partial = tmp_path / "scene.zip.tmp"
     partial.write_bytes(b"first-")
-    response = FakeResponse(206, [b"second"])
+    response = FakeResponse(
+        206,
+        [b"second"],
+        headers={"Content-Range": "bytes 6-11/12"},
+    )
+    progress = []
 
     ODataProductDownloader(
         FakeDownloadClient(response)
-    )._download_with_resume("id", partial)
+    )._download_with_resume("id", partial, progress=progress.append)
 
     assert partial.read_bytes() == b"first-second"
+    assert sum(progress) == len(b"first-second")
+
+
+def test_resume_rejects_wrong_content_range(tmp_path):
+    """Докачка не объединяет файл с ответом от неверной позиции."""
+    partial = tmp_path / "scene.zip.tmp"
+    partial.write_bytes(b"first-")
+    response = FakeResponse(
+        206,
+        [b"wrong"],
+        headers={"Content-Range": "bytes 3-7/8"},
+    )
+
+    with pytest.raises(CdseDownloadError, match="неверную позицию докачки"):
+        ODataProductDownloader(
+            FakeDownloadClient(response)
+        )._download_with_resume("id", partial)
+
+    assert partial.read_bytes() == b"first-"
+
+
+def test_http_416_discards_partial_and_restarts(tmp_path, monkeypatch):
+    """Отклонённый Range удаляет partial и запускает полную загрузку."""
+    partial = tmp_path / "scene.zip.tmp"
+    partial.write_bytes(b"obsolete")
+    response = FakeResponse(200, [b"complete"])
+    progress = []
+
+    class Client:
+        """Сначала отклоняет Range, затем возвращает полный файл."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def download_stream(self, *_args, **_kwargs):
+            """Возвращает последовательность ответа 416 и полного файла."""
+            self.calls += 1
+            if self.calls == 1:
+                raise CdseQueryError("Диапазон отклонён", status_code=416)
+            return response
+
+    monkeypatch.setattr("cdse.download.time.sleep", lambda _delay: None)
+
+    ODataProductDownloader(Client())._download_with_resume(
+        "id",
+        partial,
+        progress=progress.append,
+    )
+
+    assert partial.read_bytes() == b"complete"
+    assert sum(progress) == len(b"complete")
 
 
 def test_complete_temporary_zip_is_promoted_without_network_call(tmp_path):
@@ -424,7 +488,7 @@ def test_partial_l2a_pair_falls_back_to_complete_l1c_pair():
     assert grouped["38ULB"] == [fallback_ulb]
 
 
-def test_download_orchestrator_reports_failed_tasks():
+def test_download_orchestrator_reports_failed_tasks(tmp_path):
     """Application service агрегирует ошибку фонового скачивания."""
 
     class Downloader:
@@ -445,9 +509,49 @@ def test_download_orchestrator_reports_failed_tasks():
     with pytest.raises(RuntimeError, match="1 из 1"):
         service.download(
             {"38ULA": [product()]},
-            archive_root="/tmp/archive",
+            archive_root=tmp_path,
             workers=1,
         )
+
+
+def test_download_stops_before_network_when_disk_space_is_insufficient(
+        tmp_path,
+        monkeypatch,
+):
+    """Недостаток места обнаруживается до запуска сетевых потоков."""
+
+    class Downloader:
+        """Запрещает сетевой вызов при проваленной проверке диска."""
+
+        def download_product(self, **_kwargs):
+            """Сообщает о недопустимом начале загрузки."""
+            raise AssertionError("Скачивание не должно начинаться")
+
+    monkeypatch.setattr("cdse.service.disk_usage", lambda _path: (99, 1000))
+    service = CdseService(
+        searcher=object(),
+        downloader=Downloader(),
+        fallback_collection=L1C_COLLECTION,
+        preferred_product_type=L2A_PRODUCT_TYPE,
+        fallback_product_type=L1C_PRODUCT_TYPE,
+    )
+
+    with pytest.raises(RuntimeError, match="Недостаточно места"):
+        service.download(
+            {"38ULA": [product(size_bytes=100)]},
+            archive_root=tmp_path,
+            workers=1,
+        )
+
+
+def test_remaining_size_accounts_for_partial_download(tmp_path):
+    """Оценка места вычитает уже загруженную часть временного файла."""
+    record = product(name="SCENE.SAFE", size_bytes=100)
+    temporary = tmp_path / "2026" / "38ULA" / "SCENE.zip.tmp"
+    temporary.parent.mkdir(parents=True)
+    temporary.write_bytes(b"x" * 75)
+
+    assert _remaining_download_size([record], tmp_path) == 25
 
 
 def test_search_matches_legacy_archive_name_without_safe_suffix():

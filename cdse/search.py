@@ -32,7 +32,7 @@ def _extract_cloud_cover(item: dict[str, Any]) -> float | None:
             try:
                 return float(attr.get("Value"))
             except (TypeError, ValueError) as exc:
-                logger.warning("failed to parse cloudCover: %s", exc)
+                logger.warning("Не удалось разобрать cloudCover: %s", exc)
                 return None
     return None
 
@@ -49,7 +49,7 @@ def _extract_size_bytes(item: dict[str, Any]) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        logger.warning("failed parsing ContentLength: %s", exc)
+        logger.warning("Не удалось разобрать ContentLength: %s", exc)
         return None
 
 
@@ -129,7 +129,7 @@ class ODataProductSearcher:
         Генератор ProductRecord с дневным батчингом.
         """
         logger.info(
-            "Поиск CDSE OData: collection=%s start=%s end=%s",
+            "Поиск CDSE OData: коллекция=%s, начало=%s, конец=%s",
             collection, start, end
         )
 
@@ -226,4 +226,5 @@ class ODataProductSearcher:
         )
 
         records.sort(key=lambda r: (r.tile or "", r.date or "", r.name or ""))
+        logger.info("Поиск CDSE завершён: найдено продуктов %s", len(records))
         return records

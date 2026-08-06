@@ -79,7 +79,9 @@ class CdseODataClient:
         try:
             response = self.session.request(method, url, **kwargs)
         except requests.RequestException as exc:
-            raise CdseQueryError(f"HTTP ошибка {method} {url}: {exc}") from exc
+            raise CdseQueryError(
+                f"Ошибка HTTP-запроса {method} {url}: {exc}"
+            ) from exc
 
         if response.status_code == 401 and authorized and retry_auth:
             response.close()
@@ -89,15 +91,18 @@ class CdseODataClient:
                 response = self.session.request(method, url, **kwargs)
             except requests.RequestException as exc:
                 raise CdseQueryError(
-                    f"HTTP ошибка после refresh {method} {url}: {exc}") from exc
+                    "Ошибка HTTP-запроса после обновления токена "
+                    f"{method} {url}: {exc}"
+                ) from exc
 
         if response.status_code >= 400:
             status_code = response.status_code
             response_text = response.text[:2000]
             response.close()
             raise CdseQueryError(
-                f"CDSE HTTP {status_code} for {method} {url}: "
-                f"{response_text}"
+                f"CDSE вернул HTTP {status_code} для {method} {url}: "
+                f"{response_text}",
+                status_code=status_code,
             )
 
         return response
@@ -206,7 +211,12 @@ class CdseODataClient:
         Стриминг скачивания продукта.
         """
         url = f"{self.download_base}/Products({product_id})/$value"
+        request_headers = {
+            "Accept": "application/octet-stream",
+            "Accept-Encoding": "identity",
+        }
+        request_headers.update(headers or {})
         return self.request(
             "GET", url, authorized=authorized, stream=True,
-            headers=headers
+            headers=request_headers,
         )

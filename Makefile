@@ -6,6 +6,7 @@ DAYS ?= 3
 
 DOWNLOAD_RANGE := $(if $(strip $(START)),--start $(START),--lookback-days $(DAYS))
 DOWNLOAD_RANGE += $(if $(strip $(END)),--end $(END))
+DOWNLOAD_WORKERS := $(if $(strip $(WORKERS)),--workers $(WORKERS))
 
 PROCESS_RANGE := $(if $(strip $(START)),--start $(START))
 PROCESS_RANGE += $(if $(strip $(END)),--end $(END))
@@ -26,6 +27,7 @@ help:
 	@echo "  make search START=2026-07-01 END=2026-07-31"
 	@echo "  make download                       Поиск и скачивание за 3 дня"
 	@echo "  make download START=... END=..."
+	@echo "  make download WORKERS=2             Число параллельных загрузок"
 	@echo "  make process                        Обработка всех незавершённых пар"
 	@echo "  make process START=... END=..."
 	@echo "  make process YEAR=2026 MONTH=7"
@@ -47,7 +49,7 @@ search: check-env
 	$(MANAGE) download $(DOWNLOAD_RANGE)
 
 download: check-env
-	$(MANAGE) download $(DOWNLOAD_RANGE) --download
+	$(MANAGE) download $(DOWNLOAD_RANGE) --download $(DOWNLOAD_WORKERS)
 
 process: check-env
 	$(MANAGE) processing $(PROCESS_RANGE) $(PROCESS_DEBUG)

@@ -67,18 +67,22 @@ class CdseTokenProvider:
                 response = self.session.post(self.token_url, data=data, timeout=60)
                 response.raise_for_status()
             except requests.RequestException as exc:
-                raise CdseAuthError(f"Не удалось получить CDSE token: {exc}") from exc
+                raise CdseAuthError(
+                    f"Не удалось получить токен CDSE: {exc}"
+                ) from exc
 
             try:
                 payload = response.json()
             except ValueError as exc:
-                raise CdseAuthError("CDSE token endpoint вернул не-JSON ответ") from exc
+                raise CdseAuthError(
+                    "Сервис токенов CDSE вернул ответ не в формате JSON"
+                ) from exc
 
             token = payload.get("access_token")
             if not token:
                 fields = ", ".join(sorted(map(str, payload)))
                 raise CdseAuthError(
-                    "CDSE token endpoint не вернул access_token "
+                    "Сервис токенов CDSE не вернул access_token "
                     f"(поля ответа: {fields or 'нет'})"
                 )
 

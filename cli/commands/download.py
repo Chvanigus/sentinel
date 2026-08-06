@@ -11,6 +11,7 @@ from core.logging import get_logger
 from core.management.base import BaseCommand
 from core.settings import (
     ARCHIVE_ROOT,
+    DOWNLOAD_WORKERS,
     L2A_COLLECTION,
     L2A_PRODUCT_TYPE,
     TARGET_TILES,
@@ -69,6 +70,15 @@ class Command(BaseCommand):
             action="store_true",
             help="Скачивать найденные продукты"
         )
+        parser.add_argument(
+            "--workers",
+            type=int,
+            default=DOWNLOAD_WORKERS,
+            help=(
+                "Количество одновременных загрузок "
+                f"(по умолчанию: {DOWNLOAD_WORKERS})"
+            ),
+        )
 
     def handle(self, *args, **options):
         """Ищет продукты, печатает отчёт и при необходимости скачивает архивы."""
@@ -106,7 +116,7 @@ class Command(BaseCommand):
         if do_download:
             service.download(
                 products,
-                workers=4,
+                workers=options["workers"],
                 archive_root=ARCHIVE_ROOT,
             )
 

@@ -41,7 +41,8 @@ L1C_COLLECTION = "SENTINEL-2"
 L2A_PRODUCT_TYPE = "S2MSI2A"
 L1C_PRODUCT_TYPE = "S2MSI1C"
 PAGE_LIMIT = 500
-SEARCH_CHUNK_DAYS = 1
+SEARCH_CHUNK_DAYS = int(os.environ.get("CDSE_SEARCH_CHUNK_DAYS", "7"))
+DOWNLOAD_WORKERS = int(os.environ.get("CDSE_DOWNLOAD_WORKERS", "4"))
 DEFAULT_PROXY_URL = os.environ.get("CDSE_PROXY")
 _target_tiles = os.environ.get("CDSE_TILES") or os.environ.get(
     "TILES",
