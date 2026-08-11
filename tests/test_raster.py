@@ -261,5 +261,5 @@ def test_field_reader_combines_ndvi_and_scl_in_one_warp(monkeypatch):
     assert captured["builds"] == 1
     assert captured["warps"] == 1
     assert captured["vrt"][2] == {"separate": True}
-    assert captured["warp_options"]["srcNodata"] == [-9999.0, 0]
-    assert captured["warp_options"]["dstNodata"] == [-9999.0, 0]
+    assert captured["warp_options"]["srcNodata"] == "-9999.0 0"
+    assert captured["warp_options"]["dstNodata"] == "-9999.0 0"

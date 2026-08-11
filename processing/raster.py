@@ -125,11 +125,7 @@ class FieldRasterReader:
         if self._source is None:
             raise RuntimeError("FieldRasterReader должен быть открыт")
         x_resolution, y_resolution = _resolution(self._source, None, None)
-        nodata = (
-            [self.nodata, 0]
-            if self.scl_path is not None
-            else self.nodata
-        )
+        nodata = f"{self.nodata} 0" if self.scl_path is not None else self.nodata
         result = gdal.Warp(
             "",
             self._source,
