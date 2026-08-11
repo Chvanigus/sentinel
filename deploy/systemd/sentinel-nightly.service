@@ -11,10 +11,12 @@ User=sysop
 Group=sysop
 WorkingDirectory=/home/sysop/sentinel
 Environment=PYTHONUNBUFFERED=1
+Environment=SENTINEL_HEARTBEAT_FILE=/run/geliopax-monitoring/sentinel.json
 UMask=0027
+RuntimeDirectory=geliopax-monitoring
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 ExecStartPre=/usr/bin/test -r /home/sysop/sentinel/.env
 ExecStartPre=/usr/bin/test -x /home/sysop/sentinel/.venv/bin/python
-ExecStart=/home/sysop/sentinel/.venv/bin/python /home/sysop/sentinel/manage.py download --lookback-days 3 --download
-ExecStart=/home/sysop/sentinel/.venv/bin/python /home/sysop/sentinel/manage.py processing
+ExecStart=/home/sysop/sentinel/.venv/bin/python -m scripts.nightly
 TimeoutStartSec=infinity
-
