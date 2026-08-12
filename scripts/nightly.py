@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-DEFAULT_HEARTBEAT_FILE = Path("/run/geliopax-monitoring/sentinel.json")
+DEFAULT_HEARTBEAT_FILE = Path("runtime/monitoring/sentinel.json")
 
 
 def _utc_now() -> str:
@@ -97,8 +97,13 @@ def run_nightly(
 def main() -> None:
     """Запускает pipeline из корня текущего checkout и завершает процесс кодом результата."""
     project_root = Path(__file__).resolve().parents[1]
-    heartbeat_path = Path(
+    configured_path = Path(
         os.environ.get("SENTINEL_HEARTBEAT_FILE", DEFAULT_HEARTBEAT_FILE)
+    )
+    heartbeat_path = (
+        configured_path
+        if configured_path.is_absolute()
+        else project_root / configured_path
     )
     raise SystemExit(
         run_nightly(

@@ -58,7 +58,7 @@ sudo journalctl -fu sentinel-nightly.service
 
 ## Heartbeat
 
-Сервис сохраняет `/run/geliopax-monitoring/sentinel.json`. Файл содержит только
+Сервис сохраняет `/home/sysop/sentinel/runtime/monitoring/sentinel.json`. Файл содержит только
 технические поля `status`, `stage`, времена запуска/завершения и код возврата при
 ошибке. Секреты, параметры подключения и содержимое снимков туда не попадают.
 
@@ -68,5 +68,6 @@ sudo journalctl -fu sentinel-nightly.service
 - `ok` — оба этапа успешно завершены;
 - `error` — указанному этапу не удалось завершиться.
 
-`RuntimeDirectoryPreserve=yes` сохраняет последний результат после завершения
-oneshot-сервиса, чтобы backend мог читать файл через read-only bind mount.
+Постоянный каталог проекта сохраняет последний результат после завершения
+oneshot-сервиса и перезагрузки хоста, чтобы backend мог читать файл через
+read-only bind mount.
