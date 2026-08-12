@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC
 from pathlib import Path
 from time import perf_counter
 
@@ -245,7 +246,16 @@ class SentinelPairProcessor:
             for scene in scenes
             for agroid in scene.agroids
         ))
-        return replace(first, agroids=agroids)
+        acquired_at = pair.acquired_at
+        if acquired_at.tzinfo is None:
+            acquired_at = acquired_at.replace(tzinfo=UTC)
+        else:
+            acquired_at = acquired_at.astimezone(UTC)
+        return replace(
+            first,
+            agroids=agroids,
+            acquired_at=acquired_at,
+        )
 
     def _run_step(
             self,

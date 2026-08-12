@@ -1,6 +1,6 @@
 """Тесты чистого анализа NDVI отдельных полей."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import numpy as np
 
@@ -12,10 +12,17 @@ def test_analyzer_calculates_statistics_for_finite_values():
     analyzer = NdviFieldAnalyzer(nodata_value=-9999.0)
     values = np.array([[0.2, 0.4], [-9999.0, np.nan]])
 
-    result = analyzer.analyze(values, date(2026, 7, 1), field_id=42)
+    acquired_at = datetime(2026, 7, 1, 8, 16, 11, tzinfo=UTC)
+    result = analyzer.analyze(
+        values,
+        date(2026, 7, 1),
+        field_id=42,
+        acquired_at=acquired_at,
+    )
 
     assert result is not None
     assert result.field_id == 42
+    assert result.acquired_at == acquired_at
     assert result.mean == np.float32(0.3)
     assert result.minimum == np.float32(0.2)
     assert result.maximum == np.float32(0.4)

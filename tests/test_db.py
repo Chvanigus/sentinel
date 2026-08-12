@@ -18,6 +18,7 @@ def ndvi_value(field_id: int) -> NdviStatistics:
     """Создаёт тестовое значение статистики для поля."""
     return NdviStatistics(
         acquired_on=date(2026, 7, 1),
+        acquired_at=datetime(2026, 7, 1, 8, 16, 11, tzinfo=UTC),
         field_id=field_id,
         mean=0.5,
         maximum=0.8,
@@ -48,6 +49,15 @@ def test_ndvi_repository_saves_one_batch():
 
     assert len(gateway.calls) == 1
     assert len(gateway.calls[0][0][1]) == 2
+    assert gateway.calls[0][0][1][0][1] == datetime(
+        2026,
+        7,
+        1,
+        8,
+        16,
+        11,
+        tzinfo=UTC,
+    )
 
 
 def test_ndvi_repository_atomically_replaces_selected_fields():
@@ -215,6 +225,8 @@ def test_layer_metadata_refresh_uses_one_aggregate_update():
     assert payload[0]["source_tiles"] == ["T38ULA"]
     assert payload[0]["fallback_algorithm_version"] == "legacy"
     assert "SUM(ndvi.cloud_pixel_count)" in query
+    assert "UPDATE gpgeo.maps_ndvi_values AS ndvi" in query
+    assert "SET acquired_at = acquisition.acquired_at" in query
     assert "COALESCE(" in query
     assert "generated_at =" not in query
 
@@ -243,8 +255,9 @@ def test_field_repository_reads_geometry_batch_in_one_scope():
     assert result == {10: "geometry-10", 20: "geometry-20"}
     assert len(gateway.calls) == 1
     query, params = gateway.calls[0]
-    assert "unnest(%s::integer[])" in query
-    assert "CROSS JOIN LATERAL" in query
+    assert "shape.fieldid = ANY (%s)" in query
+    assert "ST_AsGeoJSON" in query
+    assert "__geo_get_field_shape" not in query
     assert params == ([10, 20], 2026)
 
 
@@ -269,8 +282,9 @@ def test_dataclass_batch_excludes_generated_id():
         include_id=False,
     )
 
-    assert rows[0][:8] == (
+    assert rows[0][:9] == (
         date(2026, 7, 1),
+        None,
         42,
         0.5,
         0.8,
@@ -279,4 +293,4 @@ def test_dataclass_batch_excludes_generated_id():
         10.0,
         True,
     )
-    assert len(rows[0]) == 23
+    assert len(rows[0]) == 24

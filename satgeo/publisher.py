@@ -197,9 +197,13 @@ class PostgisPublicationRepository:
                     SUM(ndvi.total_pixel_count) AS total_pixels
                 FROM requested
                 LEFT JOIN LATERAL
-                    gpgeo.__geo_get_fieldnames_for_agro_year(
-                        requested.agroid,
-                        %s
+                    (
+                        SELECT DISTINCT field.id
+                        FROM gpgeo.maps_field AS field
+                        INNER JOIN gpgeo.maps_field_shape AS shape
+                            ON shape.fieldid = field.id
+                        WHERE field.agroid = requested.agroid
+                          AND shape.year = %s
                     ) AS field
                     ON true
                 LEFT JOIN gpgeo.maps_ndvi_values AS ndvi

@@ -25,6 +25,7 @@ class NdviFieldAnalyzer:
             coverage_mask: np.ndarray | None = None,
             scl: np.ndarray | None = None,
             source_level: str | None = None,
+            acquired_at: datetime | None = None,
     ) -> NdviStatistics | None:
         """Возвращает статистику и показатели качества пикселей поля."""
         if ndvi is None:
@@ -104,6 +105,7 @@ class NdviFieldAnalyzer:
         return NdviStatistics(
             acquired_on=acquired_on,
             field_id=field_id,
+            acquired_at=acquired_at,
             mean=mean,
             maximum=float(np.max(values)) if values.size else None,
             minimum=float(np.min(values)) if values.size else None,

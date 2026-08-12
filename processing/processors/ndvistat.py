@@ -139,6 +139,7 @@ class NdviStatisticsProcessor:
                     val = self.analyzer.analyze(
                         ndvi=clip.values,
                         acquired_on=self.scene.acquired_on,
+                        acquired_at=self.scene.acquired_at,
                         field_id=field.id,
                         coverage_mask=clip.coverage,
                         scl=clip.scl,

@@ -61,6 +61,7 @@ class SceneContext:
     satellite: str
     level: ProductLevel
     agroids: tuple[int, ...]
+    acquired_at: datetime | None = None
     band_offsets: BandOffsets = field(default_factory=BandOffsets)
 
     @classmethod

@@ -74,6 +74,7 @@ python manage.py help
 python manage.py download --start 2026-07-01 --end 2026-07-31
 python manage.py download --start 2026-07-01 --end 2026-07-31 --download
 python manage.py download --lookback-days 3 --download
+python manage.py download --lookback-days 3 --download --workers 2
 python manage.py processing --year 2026 --month 7
 ```
 
@@ -89,6 +90,7 @@ python manage.py processing --year 2026 --month 7
 make help
 make search DAYS=3
 make download START=2026-07-01 END=2026-07-31
+make download DAYS=3 WORKERS=2
 make process
 make process YEAR=2026 MONTH=7
 make process DEBUG=1
@@ -137,6 +139,9 @@ python manage.py metadata
 `RADIO_ADD_OFFSET`/`BOA_ADD_OFFSET` из User Product Metadata. Каноническая
 миграция таблицы находится в
 [`deploy/sql/20260803_ndvi_metadata.sql`](deploy/sql/20260803_ndvi_metadata.sql).
+Для уже обновлённой БД точное время съёмки добавляет отдельная миграция
+[`deploy/sql/20260804_ndvi_acquired_at.sql`](deploy/sql/20260804_ndvi_acquired_at.sql):
+поле `date` сохраняется, а UTC-метка записывается в `acquired_at`.
 Метаданные визуальных слоёв добавляет
 [`deploy/sql/20260803_layer_metadata.sql`](deploy/sql/20260803_layer_metadata.sql),
 а независимые русские комментарии ко всем столбцам обеих таблиц собраны в

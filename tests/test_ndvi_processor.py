@@ -1,6 +1,6 @@
 """Тесты orchestration расчёта NDVI-статистики полей."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -142,6 +142,7 @@ def make_scene() -> SceneContext:
         satellite="s2a",
         level=ProductLevel.L2A,
         agroids=(3,),
+        acquired_at=datetime(2026, 7, 1, 8, 16, 11, tzinfo=UTC),
     )
 
 
@@ -203,6 +204,11 @@ def test_run_batches_missing_geometry_and_saves_statistics(
         paths.field_geojson(3, "11"),
     ]
     assert [call[2] for call in analyzer.calls] == [10, 11]
+    assert all(
+        call[3]["acquired_at"]
+        == datetime(2026, 7, 1, 8, 16, 11, tzinfo=UTC)
+        for call in analyzer.calls
+    )
     assert len(field_data.saved_values) == 1
     assert [
         value.field_id

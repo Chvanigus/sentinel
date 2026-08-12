@@ -66,6 +66,8 @@ class NdviRecord(DatabaseRecord):
 
     # Календарная дата спутниковой съёмки.
     date: date | None = None
+    # Точное время начала спутниковой съёмки в UTC.
+    acquired_at: datetime | None = None
     # Поле, для которого рассчитана статистика.
     fieldid: int | None = None
     # Среднее NDVI по валидным пикселям.

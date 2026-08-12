@@ -211,6 +211,21 @@ class LayerRepository:
                     is_cloud_masked boolean
                 )
             ),
+            acquisition AS (
+                SELECT
+                    acquired_on,
+                    MIN(acquired_at) AS acquired_at
+                FROM source
+                GROUP BY acquired_on
+            ),
+            ndvi_updated AS (
+                UPDATE gpgeo.maps_ndvi_values AS ndvi
+                SET acquired_at = acquisition.acquired_at
+                FROM acquisition
+                WHERE ndvi.date = acquisition.acquired_on
+                  AND ndvi.acquired_at IS DISTINCT FROM acquisition.acquired_at
+                RETURNING ndvi.id
+            ),
             quality AS (
                 SELECT
                     source.acquired_on,
@@ -220,9 +235,15 @@ class LayerRepository:
                     SUM(ndvi.total_pixel_count) AS total_pixels
                 FROM source
                 LEFT JOIN LATERAL
-                    gpgeo.__geo_get_fieldnames_for_agro_year(
-                        source.agroid,
-                        EXTRACT(YEAR FROM source.acquired_on)::integer
+                    (
+                        SELECT DISTINCT field.id
+                        FROM gpgeo.maps_field AS field
+                        INNER JOIN gpgeo.maps_field_shape AS shape
+                            ON shape.fieldid = field.id
+                        WHERE field.agroid = source.agroid
+                          AND shape.year = EXTRACT(
+                              YEAR FROM source.acquired_on
+                          )::integer
                     ) AS field
                     ON true
                 LEFT JOIN gpgeo.maps_ndvi_values AS ndvi
@@ -289,7 +310,14 @@ class FieldRepository:
     def list_for_agro(self, agroid: int, year: int) -> list[Field]:
         """Возвращает поля хозяйства для указанного сезона."""
         rows = self.gateway.rows(
-            "SELECT * FROM gpgeo.__geo_get_fieldnames_for_agro_year(%s, %s)",
+            """
+            SELECT DISTINCT field.id, field.name
+            FROM gpgeo.maps_field AS field
+            INNER JOIN gpgeo.maps_field_shape AS shape
+                ON shape.fieldid = field.id
+            WHERE field.agroid = %s AND shape.year = %s
+            ORDER BY field.name
+            """,
             (agroid, year),
         )
         return [
@@ -306,14 +334,31 @@ class FieldRepository:
     ) -> tuple[float, float, float, float]:
         """Возвращает прямоугольные границы хозяйства или отдельного поля."""
         rows = self.gateway.rows(
-            "SELECT * FROM gpgeo.__geostl_get_boundpoints(%s, %s, %s, %s)",
-            (year, srid, field_id, agroid),
+            """
+            SELECT
+                public.ST_XMin(bounds.extent),
+                public.ST_YMin(bounds.extent),
+                public.ST_XMax(bounds.extent),
+                public.ST_YMax(bounds.extent)
+            FROM (
+                SELECT public.ST_Extent(
+                    public.ST_Transform(shape.fieldgeometry, %s)
+                ) AS extent
+                FROM gpgeo.maps_field_shape AS shape
+                INNER JOIN gpgeo.maps_field AS field
+                    ON field.id = shape.fieldid
+                WHERE shape.year = %s
+                  AND (%s::bigint IS NULL OR shape.fieldid = %s::bigint)
+                  AND (%s::integer IS NULL OR field.agroid = %s::integer)
+            ) AS bounds
+            """,
+            (srid, year, field_id, field_id, agroid, agroid),
         )
-        if len(rows) < 3:
+        if not rows or rows[0][0] is None:
             raise LookupError(
                 f"Не найдены границы: agroid={agroid}, field={field_id}"
             )
-        return rows[0][0], rows[0][1], rows[2][0], rows[2][1]
+        return rows[0][0], rows[0][1], rows[0][2], rows[0][3]
 
     def geometries(
             self,
@@ -325,12 +370,14 @@ class FieldRepository:
             return {}
         rows = self.gateway.rows(
             """
-            SELECT requested.fieldid, shape.*
-            FROM unnest(%s::integer[]) AS requested(fieldid)
-            CROSS JOIN LATERAL gpgeo.__geo_get_field_shape(
-                requested.fieldid,
-                %s
-            ) AS shape
+            SELECT
+                shape.fieldid,
+                json_build_object(
+                    'type', 'Feature',
+                    'geometry', public.ST_AsGeoJSON(shape.fieldgeometry)::json
+                )
+            FROM gpgeo.maps_field_shape AS shape
+            WHERE shape.fieldid = ANY (%s) AND shape.year = %s
             """,
             (field_ids, year),
         )
@@ -356,6 +403,7 @@ class NdviRepository:
         return [
             (
                 item.acquired_on,
+                item.acquired_at,
                 item.field_id,
                 item.mean,
                 item.maximum,

@@ -2,6 +2,7 @@
 BEGIN;
 
 ALTER TABLE gpgeo.maps_ndvi_values
+    ADD COLUMN acquired_at timestamptz,
     ADD COLUMN valid_pixel_count bigint,
     ADD COLUMN total_pixel_count bigint,
     ADD COLUMN cloud_pixel_count bigint,
@@ -67,6 +68,8 @@ COMMENT ON COLUMN gpgeo.maps_ndvi_values.fieldid
     IS 'Поле, для которого рассчитаны NDVI и показатели качества';
 COMMENT ON COLUMN gpgeo.maps_ndvi_values.date
     IS 'Календарная дата спутниковой съёмки';
+COMMENT ON COLUMN gpgeo.maps_ndvi_values.acquired_at
+    IS 'Точное время начала спутниковой съёмки в UTC';
 COMMENT ON COLUMN gpgeo.maps_ndvi_values.ndvimean
     IS 'Среднее NDVI по валидным пикселям поля';
 COMMENT ON COLUMN gpgeo.maps_ndvi_values.ndvimax

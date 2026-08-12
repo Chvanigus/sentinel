@@ -35,6 +35,8 @@ class NdviStatistics:
     coefficient_of_variation: float | None
     # Признак однородности валидной части поля.
     is_uniform: bool
+    # Точное время начала спутниковой съёмки в UTC.
+    acquired_at: datetime | None = None
     # Количество пикселей, вошедших в численную статистику.
     valid_pixel_count: int | None = None
     # Общее количество пикселей внутри геометрии поля.
