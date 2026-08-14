@@ -13,6 +13,8 @@ class Field:
     id: int
     # Пользовательское название поля.
     name: str
+    # Код поля, используемый для внешнего выбора, например F100б.
+    fieldcode: str | None = None
 
 
 @dataclass(frozen=True)

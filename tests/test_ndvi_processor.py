@@ -156,7 +156,10 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     Path(paths.scl_source(3)).write_bytes(b"scl")
     existing_geojson = Path(paths.field_geojson(3, "10"))
     existing_geojson.write_text("existing", encoding="utf-8")
-    fields = [Field(id=10, name="10"), Field(id=11, name="11")]
+    fields = [
+        Field(id=10, name="10", fieldcode="F100а"),
+        Field(id=11, name="11", fieldcode="F100б"),
+    ]
     field_data = RecordingFieldData(
         fields,
         {11: "geometry-11"},
@@ -298,6 +301,73 @@ def test_run_overwrites_completed_statistics_with_quality_metadata(
         "acquired_on": date(2026, 7, 1),
         "overwrite": True,
     }
+
+
+def test_run_overwrites_only_selected_field(tmp_path, monkeypatch):
+    """Выборочный перерасчёт анализирует и заменяет только заданное поле."""
+    paths = StatisticsPaths(tmp_path)
+    Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
+    Path(paths.scl_source(3)).write_bytes(b"scl")
+    fields = [
+        Field(id=10, name="10", fieldcode="F100а"),
+        Field(id=11, name="11", fieldcode="F100б"),
+    ]
+    for field in fields:
+        Path(paths.field_geojson(3, field.name)).write_text(
+            "geometry",
+            encoding="utf-8",
+        )
+    field_data = RecordingFieldData(fields, {}, complete=True)
+    analyzer = RecordingAnalyzer()
+    RASTER_READERS.clear()
+    monkeypatch.setattr(
+        "processing.processors.ndvistat.FieldRasterReader",
+        RecordingRasterReader,
+    )
+    processor = NdviStatisticsProcessor(
+        make_scene(),
+        paths,
+        field_data,
+        WritingGeometryExporter(),
+        nodata=-9999.0,
+        overwrite=True,
+        target_fieldcodes=("f100Б",),
+    )
+    processor.analyzer = analyzer
+
+    processor.run()
+
+    assert [call[2] for call in analyzer.calls] == [11]
+    values, options = field_data.saved_values[0]
+    assert [value.field_id for value in values] == [11]
+    assert options["field_ids"] == [11]
+
+
+def test_run_rejects_field_from_another_agro(tmp_path):
+    """Поле вне выбранного хозяйства отклоняется без изменения статистики."""
+    paths = StatisticsPaths(tmp_path)
+    Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
+    Path(paths.scl_source(3)).write_bytes(b"scl")
+    field_data = RecordingFieldData(
+        [Field(id=10, name="10", fieldcode="F100а")],
+        {},
+    )
+
+    with pytest.raises(
+            LookupError,
+            match="Fieldcode не относятся к агро 3: F100б",
+    ):
+        NdviStatisticsProcessor(
+            make_scene(),
+            paths,
+            field_data,
+            WritingGeometryExporter(),
+            nodata=-9999.0,
+            overwrite=True,
+            target_fieldcodes=("F100б",),
+        ).run()
+
+    assert field_data.saved_values == []
 
 
 def test_save_geojsons_rejects_field_without_id(tmp_path):

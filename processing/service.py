@@ -35,8 +35,9 @@ class ArchivePairProcessor(Protocol):
             self,
             pair,
             target_agroids: tuple[int, ...] | None = None,
+            target_fieldcodes: tuple[str, ...] | None = None,
     ) -> None:
-        """Обрабатывает оба архива и общие этапы одной даты."""
+        """Обрабатывает архивы для выбранных хозяйств и полей даты."""
         ...
 
 
@@ -90,8 +91,16 @@ class ProcessingService:
             debug: bool = False,
             start_date: datetime | None = None,
             end_date: datetime | None = None,
+            target_agroids: tuple[int, ...] | None = None,
+            target_fieldcodes: tuple[str, ...] | None = None,
     ) -> ProcessingRunSummary:
         """Отбирает пары по периоду, обрабатывает и публикует каждую дату."""
+        if target_fieldcodes is not None and (
+                target_agroids is None or len(target_agroids) != 1
+        ):
+            raise ValueError(
+                "Для выбора поля требуется ровно одно целевое агро"
+            )
         run_started = perf_counter()
         root = Path(archive_root) if archive_root else self.archive_root
         pairs = self.pair_finder.find(
@@ -125,9 +134,14 @@ class ProcessingService:
 
         selected: list[tuple[object, tuple[int, ...] | None]] = []
         for pair in candidates:
-            target_agroids = None
+            pair_target_agroids = target_agroids
             if not debug and not self.process_completed:
                 missing = missing_by_date[pair.acquired_on]
+                if target_agroids is not None:
+                    requested = set(target_agroids)
+                    missing = [
+                        agroid for agroid in missing if agroid in requested
+                    ]
                 if not missing:
                     skipped += 1
                     self.logger.info(
@@ -140,14 +154,16 @@ class ProcessingService:
                     pair.acquired_on,
                     ", ".join(map(str, missing)),
                 )
-                target_agroids = tuple(missing)
+                pair_target_agroids = tuple(missing)
             elif self.process_completed:
                 self.logger.info(
-                    "RECALCULATE %s → принудительная обработка NDVI",
+                    "RECALCULATE %s → NDVI, агро=%s, поля=%s",
                     pair.acquired_on,
+                    pair_target_agroids or "все",
+                    target_fieldcodes or "все",
                 )
 
-            selected.append((pair, target_agroids))
+            selected.append((pair, pair_target_agroids))
 
         failed_dates: list[str] = []
         processed = 0
@@ -170,10 +186,10 @@ class ProcessingService:
                         perf_counter() - cleanup_started,
                     )
                 processing_started = perf_counter()
-                self.pair_processor.process(
-                    pair,
-                    target_agroids=target_agroids,
-                )
+                process_options = {"target_agroids": target_agroids}
+                if target_fieldcodes is not None:
+                    process_options["target_fieldcodes"] = target_fieldcodes
+                self.pair_processor.process(pair, **process_options)
                 self.logger.info(
                     "PROCESSING OK: %s | %.2f сек.",
                     date_label,

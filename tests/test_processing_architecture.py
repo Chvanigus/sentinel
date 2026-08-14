@@ -403,6 +403,74 @@ def test_recalculation_processes_completed_dates_and_cleans_before_work():
     assert summary.skipped == 0
 
 
+def test_recalculation_passes_selected_agro_and_field_to_processor():
+    """Перерасчёт передаёт выбранную область до процессора пары архивов."""
+
+    class Finder:
+        """Возвращает одну архивную пару."""
+
+        def find(self, _root, **_options):
+            """Возвращает тестовую дату перерасчёта."""
+            return [pair(1)]
+
+    calls = []
+
+    class Processor:
+        """Записывает селекторы, дошедшие до обработки пары."""
+
+        def process(self, archive_pair, **options):
+            """Фиксирует пару, хозяйство и поле."""
+            calls.append((archive_pair, options))
+
+    class Publisher:
+        """Имитирует успешную публикацию результата."""
+
+        def publish_date(self, _acquired_on, _source):
+            """Завершает публикацию без внешних действий."""
+
+    class Cleaner:
+        """Имитирует очистку рабочего каталога."""
+
+        def clean(self, _acquired_on):
+            """Завершает очистку без внешних действий."""
+
+    service = ProcessingService(
+        archive_root="/archive",
+        pair_finder=Finder(),
+        status_reader=object(),
+        pair_processor=Processor(),
+        publisher=Publisher(),
+        cleaner=Cleaner(),
+        process_completed=True,
+    )
+
+    service.run(target_agroids=(3,), target_fieldcodes=("F100б",))
+
+    assert calls == [(pair(1), {
+        "target_agroids": (3,),
+        "target_fieldcodes": ("F100б",),
+    })]
+
+
+def test_field_selection_requires_exactly_one_agro():
+    """Application service отклоняет поле без единственного хозяйства."""
+    service = ProcessingService(
+        archive_root="/archive",
+        pair_finder=object(),
+        status_reader=object(),
+        pair_processor=object(),
+        publisher=object(),
+        cleaner=object(),
+        process_completed=True,
+    )
+
+    with pytest.raises(ValueError, match="ровно одно целевое агро"):
+        service.run(
+            target_agroids=(3, 4),
+            target_fieldcodes=("F100б",),
+        )
+
+
 def test_application_modules_do_not_import_infrastructure():
     """Чистые application-модули не импортируют инфраструктурные пакеты."""
     root = Path(__file__).parents[1]

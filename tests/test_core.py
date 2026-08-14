@@ -7,7 +7,11 @@ import pytest
 
 from cli.commands.metadata import Command as MetadataCommand
 from cli.commands.processing import Command as ProcessingCommand
-from cli.commands.processing import resolve_date_range
+from cli.commands.processing import (
+    parse_agro_selector,
+    parse_field_selector,
+    resolve_date_range,
+)
 from core import settings
 from core.management.base import BaseCommand
 from core.management.manager import ManagementUtility, get_command_names
@@ -89,6 +93,63 @@ def test_ndvi_recalculation_requires_explicit_period(monkeypatch):
             start=None,
             end=None,
         )
+
+
+def test_ndvi_selectors_parse_agro_list_and_cyrillic_fieldcode():
+    """Селекторы разбирают несколько агро и Unicode fieldcode."""
+    assert parse_agro_selector("3, 4,3") == (3, 4)
+    assert parse_field_selector("A3/F100б") == (3, "F100б")
+
+
+def test_ndvi_recalculation_rejects_two_target_types():
+    """Одновременный выбор хозяйств и поля отклоняется как неоднозначный."""
+    with pytest.raises(ValueError, match="либо --agro, либо --field"):
+        ProcessingCommand().handle(
+            debug=False,
+            recalculate_ndvi=True,
+            agro=(3, 4),
+            field=(3, "F100б"),
+            year=2026,
+            month=None,
+            start=None,
+            end=None,
+        )
+
+
+def test_ndvi_recalculation_passes_cyrillic_fieldcode_target(monkeypatch):
+    """Команда передаёт агро из селектора и кириллический fieldcode."""
+    calls = []
+
+    class Service:
+        """Имитирует processing service и записывает параметры запуска."""
+
+        def run(self, **options):
+            """Сохраняет параметры выборочного перерасчёта."""
+            calls.append(options)
+
+    monkeypatch.setattr(
+        "processing.composition.build_processing_service",
+        lambda **_options: Service(),
+    )
+
+    ProcessingCommand().handle(
+        debug=False,
+        recalculate_ndvi=True,
+        agro=None,
+        field=(3, "F100б"),
+        year=2026,
+        month=7,
+        start=None,
+        end=None,
+    )
+
+    assert calls == [{
+        "debug": False,
+        "start_date": datetime(2026, 7, 1),
+        "end_date": datetime(2026, 8, 1),
+        "target_agroids": (3,),
+        "target_fieldcodes": ("F100б",),
+    }]
 
 
 def test_metadata_command_passes_normalized_period(monkeypatch):

@@ -96,6 +96,8 @@ make process YEAR=2026 MONTH=7
 make process DEBUG=1
 make recalculate-ndvi YEAR=2026
 make recalculate-ndvi START=2026-07-01 END=2026-07-31
+make recalculate-ndvi YEAR=2026 AGRO=3,4
+make recalculate-ndvi YEAR=2026 FIELD=A3/F100б
 make refresh-metadata YEAR=2026
 make refresh-metadata
 ```
@@ -109,6 +111,10 @@ make refresh-metadata
 `maps_ndvi_values`, опубликованные NDVI-растры и запускает `reseed` GWC-кэша.
 Для защиты от случайного перерасчёта всего архива обязательно передать
 `YEAR` либо `START`; режим `DEBUG=1` с этой командой не используется.
+Без селектора команда пересчитывает все хозяйства. `AGRO=3,4` ограничивает
+перерасчёт перечисленными хозяйствами, а `FIELD=A3/F100б` — одним полем по
+`fieldcode`; Unicode-коды, включая кириллицу, поддерживаются. Префикс `A3`
+выбирает хозяйство, и принадлежность поля проверяется до изменения статистики.
 
 `refresh-metadata` не открывает растры и не обращается к GeoServer. Команда
 читает время, спутник, уровень, processing baseline и тайлы из локальных

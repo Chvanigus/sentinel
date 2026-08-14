@@ -311,17 +311,25 @@ class FieldRepository:
         """Возвращает поля хозяйства для указанного сезона."""
         rows = self.gateway.rows(
             """
-            SELECT DISTINCT field.id, field.name
+            SELECT DISTINCT field.id, field.name, field.fieldcode
             FROM gpgeo.maps_field AS field
             INNER JOIN gpgeo.maps_field_shape AS shape
                 ON shape.fieldid = field.id
             WHERE field.agroid = %s AND shape.year = %s
-            ORDER BY field.name
+            ORDER BY field.fieldcode, field.name
             """,
             (agroid, year),
         )
         return [
-            Field(id=int(row["id"]), name=str(row["name"]))
+            Field(
+                id=int(row["id"]),
+                name=str(row["name"]),
+                fieldcode=(
+                    str(row["fieldcode"])
+                    if row["fieldcode"] is not None
+                    else None
+                ),
+            )
             for row in rows
         ]
 

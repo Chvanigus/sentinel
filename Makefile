@@ -13,6 +13,8 @@ PROCESS_RANGE += $(if $(strip $(END)),--end $(END))
 PROCESS_RANGE += $(if $(strip $(YEAR)),--year $(YEAR))
 PROCESS_RANGE += $(if $(strip $(MONTH)),--month $(MONTH))
 PROCESS_DEBUG := $(if $(filter 1 true yes,$(strip $(DEBUG))),--debug)
+NDVI_TARGET := $(if $(strip $(AGRO)),--agro "$(AGRO)")
+NDVI_TARGET += $(if $(strip $(FIELD)),--field "$(FIELD)")
 
 .PHONY: help check-env search download process process-debug recalculate-ndvi
 .PHONY: refresh-metadata
@@ -34,6 +36,8 @@ help:
 	@echo "  make process DEBUG=1                Без очистки рабочих файлов"
 	@echo "  make recalculate-ndvi YEAR=2026     Полная замена NDVI за год"
 	@echo "  make recalculate-ndvi START=... END=..."
+	@echo "  make recalculate-ndvi YEAR=2026 AGRO=3,4"
+	@echo "  make recalculate-ndvi YEAR=2026 FIELD=A3/F100б"
 	@echo "  make refresh-metadata YEAR=2026     Только метаданные снимков"
 	@echo "  make refresh-metadata               Метаданные всего архива"
 	@echo "  make test | lint | smoke            Локальные проверки"
@@ -58,7 +62,7 @@ process-debug: check-env
 	$(MANAGE) processing $(PROCESS_RANGE) --debug
 
 recalculate-ndvi: check-env
-	$(MANAGE) processing $(PROCESS_RANGE) --recalculate-ndvi
+	$(MANAGE) processing $(PROCESS_RANGE) --recalculate-ndvi $(NDVI_TARGET)
 
 refresh-metadata: check-env
 	$(MANAGE) metadata $(PROCESS_RANGE)

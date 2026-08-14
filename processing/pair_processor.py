@@ -56,8 +56,9 @@ class SentinelPairProcessor:
             self,
             pair: ArchivePair,
             target_agroids: tuple[int, ...] | None = None,
+            target_fieldcodes: tuple[str, ...] | None = None,
     ) -> None:
-        """Обрабатывает только хозяйства, отсутствующие у выбранной даты."""
+        """Обрабатывает выбранные хозяйства и статистику выбранных полей."""
         pair_started = perf_counter()
         scenes = []
         targets = set(target_agroids) if target_agroids is not None else None
@@ -122,7 +123,10 @@ class SentinelPairProcessor:
         self._run_step(
             "ndvi-statistics",
             self._scene_label(final_scene),
-            lambda: self._collect_statistics(final_scene),
+            lambda: self._collect_statistics(
+                final_scene,
+                target_fieldcodes=target_fieldcodes,
+            ),
         )
         self.logger.info(
             "PAIR PIPELINE OK: %s | %.2f сек.",
@@ -205,8 +209,13 @@ class SentinelPairProcessor:
         paths = CloudMaskPaths(scene, self.workspace)
         RescaleSCLProcessor(scene, paths).run()
 
-    def _collect_statistics(self, scene: SceneContext) -> None:
-        """Рассчитывает статистику всех хозяйств согласованной пары."""
+    def _collect_statistics(
+            self,
+            scene: SceneContext,
+            *,
+            target_fieldcodes: tuple[str, ...] | None = None,
+    ) -> None:
+        """Рассчитывает статистику выбранных полей хозяйств пары."""
         NdviStatisticsProcessor(
             scene,
             NdviStatisticsPaths(scene, self.workspace),
@@ -214,6 +223,7 @@ class SentinelPairProcessor:
             self.geometry_exporter,
             self.options.nodata,
             overwrite=self.overwrite_statistics,
+            target_fieldcodes=target_fieldcodes,
         ).run()
 
     @staticmethod

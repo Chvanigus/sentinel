@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 from time import perf_counter
 
 from core.logging import get_logger
@@ -23,6 +24,7 @@ class NdviStatisticsProcessor:
                  geometry_exporter: FieldGeometryExporter,
                  nodata: float,
                  overwrite: bool = False,
+                 target_fieldcodes: tuple[str, ...] | None = None,
                  ) -> None:
         self.scene = scene
         self.paths = paths
@@ -31,7 +33,13 @@ class NdviStatisticsProcessor:
         self.geometry_exporter = geometry_exporter
         self.nodata = nodata
         self.overwrite = overwrite
+        self.target_fieldcodes = target_fieldcodes
         self.analyzer = NdviFieldAnalyzer(nodata_value=nodata)
+
+    @staticmethod
+    def _normalize_fieldcode(value: str) -> str:
+        """Нормализует регистр и Unicode fieldcode, включая кириллицу."""
+        return unicodedata.normalize("NFC", value.strip()).casefold()
 
     def _save_field_geojsons(
             self,
@@ -97,6 +105,27 @@ class NdviStatisticsProcessor:
                 agroid=agroid,
                 year=year,
             )
+            if self.target_fieldcodes is not None:
+                requested = {
+                    self._normalize_fieldcode(fieldcode): fieldcode
+                    for fieldcode in self.target_fieldcodes
+                }
+                available = {
+                    self._normalize_fieldcode(field.fieldcode): field
+                    for field in fields
+                    if field.fieldcode is not None
+                }
+                missing = set(requested).difference(available)
+                if missing:
+                    raise LookupError(
+                        "Fieldcode не относятся к агро "
+                        f"{agroid}: "
+                        + ", ".join(
+                            requested[fieldcode]
+                            for fieldcode in sorted(missing)
+                        )
+                    )
+                fields = [available[fieldcode] for fieldcode in requested]
             self.logger.info(
                 "Агро %s: полей для анализа — %d",
                 agroid,
