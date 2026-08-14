@@ -20,14 +20,14 @@ class RecordingGateway:
 def test_field_list_uses_current_tables_without_legacy_function():
     """Список полей строится прямым соединением актуальных таблиц."""
     gateway = RecordingGateway([
-        {"id": 7, "name": "Поле 7", "fieldcode": "F100б"}
+        {"id": 7, "name": "Поле 7", "fieldcode": "A3/F100б"}
     ])
 
     result = FieldRepository(gateway).list_for_agro(3, 2026)
 
     query, params = gateway.calls[0]
     assert result[0].id == 7
-    assert result[0].fieldcode == "F100б"
+    assert result[0].fieldcode == "A3/F100б"
     assert "gpgeo.maps_field AS field" in query
     assert "gpgeo.maps_field_shape AS shape" in query
     assert "field.fieldcode" in query

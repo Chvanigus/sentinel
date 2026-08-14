@@ -444,11 +444,11 @@ def test_recalculation_passes_selected_agro_and_field_to_processor():
         process_completed=True,
     )
 
-    service.run(target_agroids=(3,), target_fieldcodes=("F100б",))
+    service.run(target_agroids=(3,), target_fieldcodes=("A3/F100б",))
 
     assert calls == [(pair(1), {
         "target_agroids": (3,),
-        "target_fieldcodes": ("F100б",),
+        "target_fieldcodes": ("A3/F100б",),
     })]
 
 
@@ -467,7 +467,7 @@ def test_field_selection_requires_exactly_one_agro():
     with pytest.raises(ValueError, match="ровно одно целевое агро"):
         service.run(
             target_agroids=(3, 4),
-            target_fieldcodes=("F100б",),
+            target_fieldcodes=("A3/F100б",),
         )
 
 

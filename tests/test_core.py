@@ -98,7 +98,7 @@ def test_ndvi_recalculation_requires_explicit_period(monkeypatch):
 def test_ndvi_selectors_parse_agro_list_and_cyrillic_fieldcode():
     """Селекторы разбирают несколько агро и Unicode fieldcode."""
     assert parse_agro_selector("3, 4,3") == (3, 4)
-    assert parse_field_selector("A3/F100б") == (3, "F100б")
+    assert parse_field_selector("A3/F100б") == (3, "A3/F100б")
 
 
 def test_ndvi_recalculation_rejects_two_target_types():
@@ -108,7 +108,7 @@ def test_ndvi_recalculation_rejects_two_target_types():
             debug=False,
             recalculate_ndvi=True,
             agro=(3, 4),
-            field=(3, "F100б"),
+            field=(3, "A3/F100б"),
             year=2026,
             month=None,
             start=None,
@@ -136,7 +136,7 @@ def test_ndvi_recalculation_passes_cyrillic_fieldcode_target(monkeypatch):
         debug=False,
         recalculate_ndvi=True,
         agro=None,
-        field=(3, "F100б"),
+        field=(3, "A3/F100б"),
         year=2026,
         month=7,
         start=None,
@@ -148,7 +148,7 @@ def test_ndvi_recalculation_passes_cyrillic_fieldcode_target(monkeypatch):
         "start_date": datetime(2026, 7, 1),
         "end_date": datetime(2026, 8, 1),
         "target_agroids": (3,),
-        "target_fieldcodes": ("F100б",),
+        "target_fieldcodes": ("A3/F100б",),
     }]
 
 

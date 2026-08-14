@@ -117,14 +117,17 @@ class NdviStatisticsProcessor:
                 }
                 missing = set(requested).difference(available)
                 if missing:
-                    raise LookupError(
-                        "Fieldcode не относятся к агро "
-                        f"{agroid}: "
-                        + ", ".join(
+                    self.logger.warning(
+                        "Агро %s: нет контуров за %s для fieldcode %s "
+                        "→ пропуск",
+                        agroid,
+                        year,
+                        ", ".join(
                             requested[fieldcode]
                             for fieldcode in sorted(missing)
-                        )
+                        ),
                     )
+                    continue
                 fields = [available[fieldcode] for fieldcode in requested]
             self.logger.info(
                 "Агро %s: полей для анализа — %d",

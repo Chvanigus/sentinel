@@ -157,8 +157,8 @@ def test_run_batches_missing_geometry_and_saves_statistics(
     existing_geojson = Path(paths.field_geojson(3, "10"))
     existing_geojson.write_text("existing", encoding="utf-8")
     fields = [
-        Field(id=10, name="10", fieldcode="F100а"),
-        Field(id=11, name="11", fieldcode="F100б"),
+        Field(id=10, name="10", fieldcode="A3/F100а"),
+        Field(id=11, name="11", fieldcode="A3/F100б"),
     ]
     field_data = RecordingFieldData(
         fields,
@@ -309,8 +309,8 @@ def test_run_overwrites_only_selected_field(tmp_path, monkeypatch):
     Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
     Path(paths.scl_source(3)).write_bytes(b"scl")
     fields = [
-        Field(id=10, name="10", fieldcode="F100а"),
-        Field(id=11, name="11", fieldcode="F100б"),
+        Field(id=10, name="10", fieldcode="A3/F100а"),
+        Field(id=11, name="11", fieldcode="A3/F100б"),
     ]
     for field in fields:
         Path(paths.field_geojson(3, field.name)).write_text(
@@ -331,7 +331,7 @@ def test_run_overwrites_only_selected_field(tmp_path, monkeypatch):
         WritingGeometryExporter(),
         nodata=-9999.0,
         overwrite=True,
-        target_fieldcodes=("f100Б",),
+        target_fieldcodes=("a3/f100Б",),
     )
     processor.analyzer = analyzer
 
@@ -343,30 +343,27 @@ def test_run_overwrites_only_selected_field(tmp_path, monkeypatch):
     assert options["field_ids"] == [11]
 
 
-def test_run_rejects_field_from_another_agro(tmp_path):
-    """Поле вне выбранного хозяйства отклоняется без изменения статистики."""
+def test_run_skips_field_without_shape_for_year(tmp_path):
+    """Поле без сезонного контура пропускается без изменения статистики."""
     paths = StatisticsPaths(tmp_path)
     Path(paths.ndvi_source(3)).write_bytes(b"ndvi")
     Path(paths.scl_source(3)).write_bytes(b"scl")
     field_data = RecordingFieldData(
-        [Field(id=10, name="10", fieldcode="F100а")],
+        [Field(id=10, name="10", fieldcode="A3/F100а")],
         {},
     )
 
-    with pytest.raises(
-            LookupError,
-            match="Fieldcode не относятся к агро 3: F100б",
-    ):
-        NdviStatisticsProcessor(
-            make_scene(),
-            paths,
-            field_data,
-            WritingGeometryExporter(),
-            nodata=-9999.0,
-            overwrite=True,
-            target_fieldcodes=("F100б",),
-        ).run()
+    NdviStatisticsProcessor(
+        make_scene(),
+        paths,
+        field_data,
+        WritingGeometryExporter(),
+        nodata=-9999.0,
+        overwrite=True,
+        target_fieldcodes=("A3/F100б",),
+    ).run()
 
+    assert field_data.geometry_calls == []
     assert field_data.saved_values == []
 
 

@@ -34,7 +34,7 @@ def parse_field_selector(value: str) -> tuple[int, str]:
     agroid = int(match.group("agroid"))
     if agroid <= 0:
         raise ValueError("Номер агро в FIELD должен быть положительным")
-    return agroid, match.group("fieldcode")
+    return agroid, normalized
 
 
 class Command(BaseCommand):
