@@ -97,6 +97,29 @@ def test_publication_planner_builds_host_and_container_paths(tmp_path):
     )
 
 
+def test_publication_planner_reuses_legacy_month_path(tmp_path):
+    """Повторная публикация не создаёт копию между ``7`` и ``07``."""
+    planner = PublicationPlanner(
+        tmp_path / "geoware",
+        "/opt/geoserver_data/geoware",
+    )
+    legacy = (
+        tmp_path / "geoware" / "2026" / "a4" / "ndvi" / "7"
+        / "a4_ndvi_2026-07-02.tif"
+    )
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"published")
+
+    plan = planner.build(
+        tmp_path / "s2a_02_07_2026_a4_ndvi_10m_3857.tif"
+    )
+
+    assert plan.destination == legacy
+    assert plan.container_path.endswith(
+        "/2026/a4/ndvi/7/a4_ndvi_2026-07-02.tif"
+    )
+
+
 def test_publication_persists_visual_metadata(tmp_path):
     """Публикация сохраняет метаданные источника и покрытия хозяйства."""
     source_file = tmp_path / "s2b_01_07_2026_a3_ndvi_10m_3857.tif"

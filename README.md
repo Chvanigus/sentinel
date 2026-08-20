@@ -180,3 +180,14 @@ python -m compileall -q manage.py cdse cli core db domain processing satgeo scri
 ```bash
 python -m scripts.gdal_smoke
 ```
+
+Дубли TIFF между старыми каталогами месяцев `1…9` и каноническими `01…09`
+проверяются operational-скриптом. По умолчанию он выполняет только dry-run и
+создаёт JSON-отчёт в `logs/`. С `--apply` удаляется исключительно копия, на
+которую не ссылается соответствующий coverage store GeoServer; при недоступном
+или неоднозначном store группа остаётся нетронутой.
+
+```bash
+python -m scripts.geoware_duplicates
+python -m scripts.geoware_duplicates --apply
+```

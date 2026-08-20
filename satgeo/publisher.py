@@ -102,14 +102,16 @@ class PublicationPlanner:
         layer_name = (
             f"a{info.agroid}_{info.img_type}_{acquired_on.isoformat()}"
         )
-        destination = (
+        destination_root = (
             self.host_data_root
             / str(acquired_on.year)
             / f"a{info.agroid}"
             / info.img_type
-            / f"{acquired_on.month:02d}"
-            / f"{layer_name}.tif"
         )
+        filename = f"{layer_name}.tif"
+        canonical = destination_root / f"{acquired_on.month:02d}" / filename
+        legacy = destination_root / str(acquired_on.month) / filename
+        destination = self._existing_or_canonical(canonical, legacy)
         relative = destination.relative_to(self.host_data_root)
         container_path = (
             self.container_data_root / relative
@@ -123,6 +125,17 @@ class PublicationPlanner:
             style_name=self.STYLE_MAP[info.img_type],
             info=info,
         )
+
+    @staticmethod
+    def _existing_or_canonical(canonical: Path, legacy: Path) -> Path:
+        """Переиспользует существующую схему месяца, не создавая дубль."""
+        if canonical == legacy or canonical.exists():
+            return canonical
+        if legacy.exists():
+            return legacy
+        if canonical.parent.exists() or not legacy.parent.exists():
+            return canonical
+        return legacy
 
 
 class PostgisPublicationRepository:
